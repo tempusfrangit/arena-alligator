@@ -1,0 +1,57 @@
+[tools]
+"cargo-binstall" = "latest"
+"cargo:cargo-nextest" = "latest"
+"cargo:cargo-deny" = "latest"
+
+[settings]
+experimental = true
+lockfile = true
+
+[tasks.format]
+description = "Checks formatting via `cargo fmt --check`"
+run = 'cargo fmt --check'
+
+[tasks."format:fix"]
+description = "Fixes formatting via `cargo fmt`"
+run = 'cargo fmt'
+
+[tasks.lint]
+description = "Runs linting tasks"
+run = [
+    { tasks = [
+        "clippy",
+        "format",
+        "deny:check",
+    ] },
+]
+
+[tasks.clippy]
+description = "Clippy linting"
+run = 'cargo clippy -- -D warnings'
+
+[tasks."clippy:fix"]
+description = "Clippy in 'fix' mode"
+run = 'cargo clippy --fix'
+
+[tasks.test]
+description = "Run tests"
+run = [
+    { task = "test:nextest" }
+]
+
+[tasks."test:nextest"]
+description = "Run tests with nextest"
+run = 'cargo nextest run'
+
+[tasks."test:cargo"]
+description = "Run tests with `cargo test`"
+hide = true
+run = 'cargo test'
+
+[tasks."deny:check"]
+description = "Run `cargo deny check`"
+run = 'cargo deny check'
+
+[tasks.build]
+description = "Build arena alligator"
+run = 'cargo build'

@@ -1,0 +1,37 @@
+*
+
+# Git Control
+!.gitignore
+!.gitattributes
+
+# Documentation
+!/docs/
+!/docs/**/*.md
+!README.md
+!/LICENSE
+
+
+# Rust Files
+!/Cargo.toml
+!/Cargo.lock
+!/src/
+!/src/**/
+!/src/**/*.rs
+
+# Tooling
+!/.github/
+!/.github/**
+
+!/deny.toml
+!/.config/
+!/.config/nextest.toml
+
+# mise
+!mise.toml
+!mise.lock
+
+# Deny List (Ignore these files even if a parent directory is allowed)
+#/ ignore top-level target
+target
+debug
+
