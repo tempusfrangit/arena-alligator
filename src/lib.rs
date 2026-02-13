@@ -3,6 +3,8 @@
 
 //! Arena allocator producing `bytes::Bytes` via `from_owner`.
 
+#[allow(dead_code)]
+mod bitmap;
 mod error;
 
-pub use error::{AllocError, BuildError, BufferFullError};
+pub use error::{AllocError, BufferFullError, BuildError};
