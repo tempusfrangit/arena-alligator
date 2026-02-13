@@ -24,8 +24,6 @@ pub enum BuildError {
     SizeOverflow,
     /// Alignment is not a power of 2.
     InvalidAlignment,
-    /// Zero slots requested.
-    ZeroSlots,
 }
 
 impl fmt::Display for BuildError {
@@ -33,7 +31,6 @@ impl fmt::Display for BuildError {
         match self {
             BuildError::SizeOverflow => write!(f, "total arena size overflows usize"),
             BuildError::InvalidAlignment => write!(f, "alignment must be a power of 2"),
-            BuildError::ZeroSlots => write!(f, "slot count must be greater than zero"),
         }
     }
 }
@@ -87,16 +84,12 @@ mod tests {
             BuildError::InvalidAlignment.to_string(),
             "alignment must be a power of 2"
         );
-        assert_eq!(
-            BuildError::ZeroSlots.to_string(),
-            "slot count must be greater than zero"
-        );
     }
 
     #[test]
     fn build_error_is_std_error() {
-        let err: Box<dyn std::error::Error> = Box::new(BuildError::ZeroSlots);
-        assert!(err.to_string().contains("zero"));
+        let err: Box<dyn std::error::Error> = Box::new(BuildError::SizeOverflow);
+        assert!(err.to_string().contains("overflows"));
     }
 
     #[test]
