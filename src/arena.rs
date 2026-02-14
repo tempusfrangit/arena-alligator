@@ -4,14 +4,14 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::bitmap::AtomicBitmap;
-use crate::error::BuildError;
+use crate::buffer::Buffer;
+use crate::error::{AllocError, BuildError};
 
 pub(crate) struct ArenaInner {
     pub(crate) ptr: *mut u8,
     layout: Layout,
     pub(crate) slot_capacity: usize,
     pub(crate) slot_count: usize,
-    #[allow(dead_code)]
     pub(crate) bitmap: AtomicBitmap,
 }
 
@@ -70,6 +70,20 @@ impl FixedArena {
     /// Capacity of each slot in bytes (aligned).
     pub fn slot_capacity(&self) -> usize {
         self.inner.slot_capacity
+    }
+
+    /// Allocate a buffer. Returns `Err(AllocError::ArenaFull)` if all slots are in use.
+    pub fn allocate(&self) -> Result<Buffer, AllocError> {
+        let slot_idx = self.inner.bitmap.try_alloc().ok_or(AllocError::ArenaFull)?;
+
+        let offset = slot_idx * self.inner.slot_capacity;
+
+        Ok(Buffer::new(
+            Arc::clone(&self.inner),
+            slot_idx,
+            offset,
+            self.inner.slot_capacity,
+        ))
     }
 }
 
@@ -198,5 +212,39 @@ mod tests {
         let arena2 = arena.clone();
         assert_eq!(arena.slot_count(), arena2.slot_count());
         assert_eq!(arena.slot_capacity(), arena2.slot_capacity());
+    }
+
+    #[test]
+    fn allocate_and_drop() {
+        let arena = FixedArena::builder(nz(2), nz(64)).build().unwrap();
+
+        let buf1 = arena.allocate().unwrap();
+        let buf2 = arena.allocate().unwrap();
+        assert!(arena.allocate().is_err(), "arena should be full");
+
+        drop(buf1);
+        let _buf3 = arena.allocate().unwrap();
+        drop(buf2);
+    }
+
+    #[test]
+    fn allocate_full_returns_arena_full() {
+        let arena = FixedArena::builder(nz(1), nz(32)).build().unwrap();
+
+        let _buf = arena.allocate().unwrap();
+        let err = arena.allocate().unwrap_err();
+        assert_eq!(err, crate::AllocError::ArenaFull);
+    }
+
+    #[test]
+    fn drop_returns_slot() {
+        let arena = FixedArena::builder(nz(1), nz(32)).build().unwrap();
+
+        let buf = arena.allocate().unwrap();
+        drop(buf);
+        assert!(
+            arena.allocate().is_ok(),
+            "slot should be available after drop"
+        );
     }
 }

@@ -4,9 +4,10 @@
 //! Arena allocator producing `bytes::Bytes` via `from_owner`.
 
 mod arena;
-#[allow(dead_code)]
 mod bitmap;
+mod buffer;
 mod error;
 
 pub use arena::{FixedArena, FixedArenaBuilder};
+pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
