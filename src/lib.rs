@@ -7,6 +7,7 @@ mod arena;
 mod bitmap;
 mod buffer;
 mod error;
+mod handle;
 
 pub use arena::{FixedArena, FixedArenaBuilder};
 pub use buffer::Buffer;

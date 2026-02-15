@@ -2,11 +2,12 @@ use std::fmt;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
-use bytes::BufMut;
 use bytes::buf::UninitSlice;
+use bytes::{BufMut, Bytes};
 
 use crate::arena::ArenaInner;
 use crate::error::BufferFullError;
+use crate::handle::BufferHandle;
 
 /// A writable buffer backed by arena memory.
 ///
@@ -69,6 +70,32 @@ impl Buffer {
     /// Check if `len` bytes will fit without overflow.
     pub fn will_fit(&self, len: usize) -> bool {
         self.remaining_mut() >= len
+    }
+
+    /// Freeze buffer into immutable `Bytes`.
+    ///
+    /// Consumes the buffer. The returned `Bytes` keeps the arena memory
+    /// alive via `Arc`. When the last `Bytes` clone/slice drops, the
+    /// slot is freed back to the arena.
+    pub fn freeze(mut self) -> Bytes {
+        // SAFETY: inner is valid and not yet dropped.
+        let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
+        let slot_idx = self.slot_idx;
+        let offset = self.offset;
+        let len = self.len;
+
+        // Slot ownership moves to BufferHandle; prevent Buffer::drop from freeing it.
+        std::mem::forget(self);
+
+        let handle = BufferHandle::new(inner, slot_idx, offset, len);
+        Bytes::from_owner(handle)
+    }
+
+    /// Explicitly abandon this buffer without freezing.
+    ///
+    /// Equivalent to `drop(buf)`. Exists for readability.
+    pub fn abandon(self) {
+        drop(self);
     }
 }
 
