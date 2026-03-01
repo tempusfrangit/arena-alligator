@@ -113,6 +113,10 @@ impl fmt::Debug for Buffer {
 impl Drop for Buffer {
     fn drop(&mut self) {
         self.inner.bitmap.free(self.slot_idx);
+        #[cfg(feature = "async-alloc")]
+        if let Some(waker) = &self.inner.waker {
+            waker.wake();
+        }
         // SAFETY: inner is valid and not yet dropped.
         unsafe { ManuallyDrop::drop(&mut self.inner) };
     }

@@ -9,6 +9,12 @@ mod buffer;
 mod error;
 mod handle;
 
+#[cfg(feature = "async-alloc")]
+mod async_alloc;
+
 pub use arena::{FixedArena, FixedArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
+
+#[cfg(feature = "async-alloc")]
+pub use async_alloc::{AsyncFixedArena, AsyncPolicy};

@@ -34,6 +34,10 @@ impl Drop for BufferHandle {
     fn drop(&mut self) {
         // Release in bitmap.free() pairs with AcqRel in try_alloc's fetch_and.
         self.inner.bitmap.free(self.slot_idx);
+        #[cfg(feature = "async-alloc")]
+        if let Some(waker) = &self.inner.waker {
+            waker.wake();
+        }
     }
 }
 

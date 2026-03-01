@@ -13,6 +13,8 @@ pub(crate) struct ArenaInner {
     pub(crate) slot_capacity: usize,
     pub(crate) slot_count: usize,
     pub(crate) bitmap: AtomicBitmap,
+    #[cfg(feature = "async-alloc")]
+    pub(crate) waker: Option<crate::async_alloc::WakerImpl>,
 }
 
 // SAFETY: Buffer discipline enforces exclusive access per slot:
@@ -134,11 +136,63 @@ impl FixedArenaBuilder {
             slot_capacity: aligned_capacity,
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
+            #[cfg(feature = "async-alloc")]
+            waker: None,
         };
 
         Ok(FixedArena {
             inner: Arc::new(inner),
         })
+    }
+}
+
+#[cfg(feature = "async-alloc")]
+impl FixedArenaBuilder {
+    /// Build an async-capable arena with the given wait policy.
+    pub fn build_async(
+        self,
+        policy: crate::async_alloc::AsyncPolicy,
+    ) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
+        if !self.alignment.is_power_of_two() {
+            return Err(BuildError::InvalidAlignment);
+        }
+
+        let slot_count = self.slot_count.get();
+        let slot_capacity = self.slot_capacity.get();
+
+        let aligned_capacity = align_up(slot_capacity, self.alignment);
+
+        let total_size = slot_count
+            .checked_mul(aligned_capacity)
+            .ok_or(BuildError::SizeOverflow)?;
+
+        let layout = Layout::from_size_align(total_size, self.alignment)
+            .map_err(|_| BuildError::SizeOverflow)?;
+
+        // SAFETY: layout has non-zero size (slot_count > 0, aligned_capacity > 0).
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        if ptr.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+
+        let waker = match policy {
+            crate::async_alloc::AsyncPolicy::Notify => {
+                crate::async_alloc::WakerImpl::Notify(tokio::sync::Notify::new())
+            }
+        };
+
+        let inner = ArenaInner {
+            ptr,
+            layout,
+            slot_capacity: aligned_capacity,
+            slot_count,
+            bitmap: AtomicBitmap::new(slot_count),
+            waker: Some(waker),
+        };
+
+        Ok(crate::async_alloc::AsyncFixedArena::new(FixedArena {
+            inner: Arc::new(inner),
+        }))
     }
 }
 
