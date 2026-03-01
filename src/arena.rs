@@ -179,6 +179,9 @@ impl FixedArenaBuilder {
             crate::async_alloc::AsyncPolicy::Notify => {
                 crate::async_alloc::WakerImpl::Notify(tokio::sync::Notify::new())
             }
+            crate::async_alloc::AsyncPolicy::TreiberWaiters => {
+                crate::async_alloc::WakerImpl::Treiber(crate::async_alloc::TreiberStack::new())
+            }
         };
 
         let inner = ArenaInner {
