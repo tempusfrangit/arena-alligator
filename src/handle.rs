@@ -52,7 +52,7 @@ mod tests {
 
     use bytes::BufMut;
 
-    use crate::FixedArena;
+    use crate::{BuddyArena, FixedArena};
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
@@ -120,5 +120,53 @@ mod tests {
         let bytes = buf.freeze();
         assert_eq!(bytes.len(), 0);
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn buddy_freeze_produces_correct_bytes() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(b"buddy hello");
+        let bytes = buf.freeze();
+        assert_eq!(&bytes[..], b"buddy hello");
+    }
+
+    #[test]
+    fn buddy_freeze_block_freed_after_bytes_drop() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(b"buddy data");
+        let bytes = buf.freeze();
+
+        let _other = arena.allocate(nz(2048)).unwrap();
+        assert!(arena.allocate(nz(2048)).is_err());
+
+        drop(bytes);
+        assert!(arena.allocate(nz(2048)).is_ok());
+    }
+
+    #[test]
+    fn buddy_bytes_slice_is_zero_copy() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(b"hello buddy world");
+        let bytes = buf.freeze();
+
+        let hello = bytes.slice(0..5);
+        let world = bytes.slice(12..17);
+        assert_eq!(&hello[..], b"hello");
+        assert_eq!(&world[..], b"world");
+    }
+
+    #[test]
+    fn buddy_arena_dropped_while_bytes_alive() {
+        let bytes = {
+            let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+            let mut buf = arena.allocate(nz(512)).unwrap();
+            buf.put_slice(b"buddy persists");
+            buf.freeze()
+        };
+        assert_eq!(&bytes[..], b"buddy persists");
     }
 }

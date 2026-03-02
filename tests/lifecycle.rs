@@ -290,3 +290,38 @@ fn buddy_mixed_size_churn_recovers_full_arena() {
     let whole = arena.allocate(nz(4096)).unwrap();
     assert_eq!(whole.capacity(), 4096);
 }
+
+#[test]
+fn buddy_freeze_bytes_slice_drop_lifecycle() {
+    let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+
+    let mut buf = arena.allocate(nz(700)).unwrap();
+    buf.put_slice(b"hello buddy world");
+    let bytes = buf.freeze();
+
+    let _other = arena.allocate(nz(2048)).unwrap();
+    assert_eq!(
+        arena.allocate(nz(2048)).unwrap_err(),
+        AllocError::ArenaFull,
+        "the frozen 1 KiB block still prevents another 2 KiB coalesce"
+    );
+
+    let hello = bytes.slice(0..5);
+    let world = bytes.slice(12..17);
+    assert_eq!(&hello[..], b"hello");
+    assert_eq!(&world[..], b"world");
+
+    drop(bytes);
+    assert_eq!(
+        arena.allocate(nz(2048)).unwrap_err(),
+        AllocError::ArenaFull,
+        "slices should keep the buddy block pinned after the root Bytes drops"
+    );
+
+    drop(hello);
+    drop(world);
+    assert!(
+        arena.allocate(nz(2048)).is_ok(),
+        "the buddy block should release after the final slice drops"
+    );
+}
