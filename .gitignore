@@ -17,6 +17,9 @@
 !/src/
 !/src/**/
 !/src/**/*.rs
+!/tests/
+!/tests/**/
+!/tests/**/*.rs
 
 # Tooling
 !/.github/
