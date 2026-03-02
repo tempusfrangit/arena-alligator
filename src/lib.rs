@@ -5,6 +5,7 @@
 
 mod arena;
 mod bitmap;
+mod buddy;
 mod buffer;
 mod error;
 mod handle;
@@ -13,6 +14,7 @@ mod handle;
 mod async_alloc;
 
 pub use arena::{FixedArena, FixedArenaBuilder};
+pub use buddy::{BuddyArena, BuddyArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
 

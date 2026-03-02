@@ -49,6 +49,15 @@ pub(crate) struct AtomicBitmap {
 impl AtomicBitmap {
     /// Create a new bitmap with `slot_count` slots, all initially free.
     pub(crate) fn new(slot_count: usize) -> Self {
+        Self::with_allocation_state(slot_count, true)
+    }
+
+    /// Create a new bitmap with `slot_count` slots, all initially allocated.
+    pub(crate) fn new_empty(slot_count: usize) -> Self {
+        Self::with_allocation_state(slot_count, false)
+    }
+
+    fn with_allocation_state(slot_count: usize, initially_free: bool) -> Self {
         let actual_words = slot_count.div_ceil(BITS_PER_WORD);
         let scan_words = actual_words.max(1).next_power_of_two();
         let mut words = Vec::with_capacity(scan_words);
@@ -60,12 +69,13 @@ impl AtomicBitmap {
                 words.push(CacheAligned(AtomicWord::new(0)));
             } else {
                 let valid_bits = (slot_count - start_bit).min(BITS_PER_WORD);
-                let mask = if valid_bits == BITS_PER_WORD {
+                let free_mask = if valid_bits == BITS_PER_WORD {
                     Word::MAX
                 } else {
                     (1 as Word).wrapping_shl(valid_bits as u32) - 1
                 };
-                words.push(CacheAligned(AtomicWord::new(mask)));
+                let initial = if initially_free { free_mask } else { 0 };
+                words.push(CacheAligned(AtomicWord::new(initial)));
             }
         }
 
@@ -109,6 +119,22 @@ impl AtomicBitmap {
         let mask = (1 as Word) << (slot % BITS_PER_WORD) as u32;
         let prev = self.words[word_idx].0.fetch_or(mask, Ordering::Release);
         debug_assert!(prev & mask == 0, "double free");
+    }
+
+    pub(crate) fn is_free(&self, slot: usize) -> bool {
+        debug_assert!(slot < self.slot_count, "slot index out of bounds");
+        let word_idx = slot / BITS_PER_WORD;
+        let mask = (1 as Word) << (slot % BITS_PER_WORD) as u32;
+        self.words[word_idx].0.load(Ordering::Acquire) & mask != 0
+    }
+
+    pub(crate) fn free_count(&self) -> usize {
+        let mut total = 0usize;
+        let actual_words = self.slot_count.div_ceil(BITS_PER_WORD);
+        for word_idx in 0..actual_words {
+            total += self.words[word_idx].0.load(Ordering::Acquire).count_ones() as usize;
+        }
+        total
     }
 
     /// Attempt to claim one free bit from a specific word.
@@ -167,6 +193,13 @@ mod tests {
         assert!(bm.try_alloc().is_none());
         bm.free(slot);
         assert!(bm.try_alloc().is_some());
+    }
+
+    #[test]
+    fn empty_bitmap_starts_with_no_free_slots() {
+        let bm = AtomicBitmap::new_empty(4);
+        assert!(bm.try_alloc().is_none());
+        assert_eq!(bm.free_count(), 0);
     }
 
     #[test]

@@ -24,6 +24,8 @@ pub enum BuildError {
     SizeOverflow,
     /// Alignment is not a power of 2.
     InvalidAlignment,
+    /// Buddy arena geometry is invalid.
+    InvalidGeometry,
 }
 
 impl fmt::Display for BuildError {
@@ -31,6 +33,12 @@ impl fmt::Display for BuildError {
         match self {
             BuildError::SizeOverflow => write!(f, "total arena size overflows usize"),
             BuildError::InvalidAlignment => write!(f, "alignment must be a power of 2"),
+            BuildError::InvalidGeometry => {
+                write!(
+                    f,
+                    "buddy arena geometry must be a power-of-two multiple of min block size"
+                )
+            }
         }
     }
 }
@@ -83,6 +91,10 @@ mod tests {
         assert_eq!(
             BuildError::InvalidAlignment.to_string(),
             "alignment must be a power of 2"
+        );
+        assert_eq!(
+            BuildError::InvalidGeometry.to_string(),
+            "buddy arena geometry must be a power-of-two multiple of min block size"
         );
     }
 
