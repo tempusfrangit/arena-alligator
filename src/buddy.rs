@@ -18,6 +18,8 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) free_bitmaps: Box<[AtomicBitmap]>,
     pub(crate) nonempty_orders: AtomicUsize,
     pub(crate) auto_spill: bool,
+    #[cfg(feature = "async-alloc")]
+    pub(crate) waker: Option<crate::async_alloc::WakerImpl>,
 }
 
 // SAFETY: buddy allocations hand out disjoint blocks. Shared metadata access
@@ -220,6 +222,19 @@ impl BuddyArenaBuilder {
 
     /// Build the buddy arena metadata and backing allocation.
     pub fn build(self) -> Result<BuddyArena, BuildError> {
+        #[cfg(feature = "async-alloc")]
+        let inner = self.build_inner(None)?;
+        #[cfg(not(feature = "async-alloc"))]
+        let inner = self.build_inner()?;
+        Ok(BuddyArena {
+            inner: Arc::new(inner),
+        })
+    }
+
+    fn build_inner(
+        self,
+        #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::WakerImpl>,
+    ) -> Result<BuddyArenaInner, BuildError> {
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
         }
@@ -257,11 +272,25 @@ impl BuddyArenaBuilder {
             free_bitmaps: free_bitmaps.into_boxed_slice(),
             nonempty_orders: AtomicUsize::new(1usize << max_order),
             auto_spill: self.auto_spill,
+            #[cfg(feature = "async-alloc")]
+            waker,
         };
 
-        Ok(BuddyArena {
+        Ok(inner)
+    }
+}
+
+#[cfg(feature = "async-alloc")]
+impl BuddyArenaBuilder {
+    /// Build an async-capable buddy arena using notify-based waiters.
+    pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
+        let inner = self.build_inner(Some(crate::async_alloc::WakerImpl::Notify(
+            tokio::sync::Notify::new(),
+        )))?;
+
+        Ok(crate::async_alloc::AsyncBuddyArena::new(BuddyArena {
             inner: Arc::new(inner),
-        })
+        }))
     }
 }
 
@@ -280,6 +309,10 @@ impl BuddyArenaInner {
         self.nonempty_orders
             .fetch_or(1usize << order, Ordering::Release);
         self.free_bitmaps[order].free(block_idx);
+        #[cfg(feature = "async-alloc")]
+        if let Some(waker) = &self.waker {
+            waker.wake();
+        }
     }
 
     fn maybe_clear_summary(&self, order: usize) {

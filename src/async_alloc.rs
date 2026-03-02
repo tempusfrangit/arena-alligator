@@ -4,8 +4,8 @@ use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use crate::FixedArena;
 use crate::buffer::Buffer;
+use crate::{BuddyArena, FixedArena};
 
 /// Policy for how `allocate_async` waits when the arena is full.
 pub enum AsyncPolicy {
@@ -178,6 +178,64 @@ impl fmt::Debug for AsyncFixedArena {
     }
 }
 
+/// Async-capable wrapper around [`BuddyArena`].
+///
+/// Created via [`BuddyArenaBuilder::build_async()`]. Provides
+/// [`allocate_async()`](AsyncBuddyArena::allocate_async) which parks
+/// until a large-enough block becomes available, while sync methods remain
+/// accessible through `Deref<Target = BuddyArena>`.
+#[derive(Clone)]
+pub struct AsyncBuddyArena {
+    inner: BuddyArena,
+}
+
+impl AsyncBuddyArena {
+    pub(crate) fn new(inner: BuddyArena) -> Self {
+        Self { inner }
+    }
+
+    /// Allocate a buffer, waiting asynchronously if the arena is full.
+    ///
+    /// The buddy bitmaps remain the source of truth; notifications are hints
+    /// to retry after free or coalesce publishes a usable block.
+    pub async fn allocate_async(&self, len: std::num::NonZeroUsize) -> Buffer {
+        let waker = self
+            .inner
+            .inner
+            .waker
+            .as_ref()
+            .expect("allocate_async requires build_async()");
+        loop {
+            let notified = match waker {
+                WakerImpl::Notify(notify) => notify.notified(),
+                WakerImpl::Treiber(_) => unreachable!("buddy async uses notify waiters"),
+            };
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if let Ok(buf) = self.inner.allocate(len) {
+                return buf;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Deref for AsyncBuddyArena {
+    type Target = BuddyArena;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl fmt::Debug for AsyncBuddyArena {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsyncBuddyArena")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
 pub(crate) enum WakerImpl {
     Notify(tokio::sync::Notify),
     Treiber(TreiberStack),
@@ -200,6 +258,7 @@ mod tests {
     use bytes::BufMut;
     use tokio::time::{Duration, timeout};
 
+    use crate::BuddyArena;
     use crate::FixedArena;
 
     use super::*;
@@ -375,5 +434,106 @@ mod tests {
         let _buf = arena.allocate().unwrap();
         let err = arena.allocate().unwrap_err();
         assert_eq!(err, crate::AllocError::ArenaFull);
+    }
+
+    #[tokio::test]
+    async fn buddy_allocate_async_waits_then_succeeds() {
+        let arena = Arc::new(
+            BuddyArena::builder(nz(4096), nz(512))
+                .build_async()
+                .unwrap(),
+        );
+        let buf = arena.allocate(nz(2048)).unwrap();
+
+        let arena2 = Arc::clone(&arena);
+        let handle = tokio::spawn(async move {
+            let buf = arena2.allocate_async(nz(2048)).await;
+            buf.capacity()
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(buf);
+
+        let cap = timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("should not timeout")
+            .expect("task should not panic");
+        assert_eq!(cap, 2048);
+    }
+
+    #[tokio::test]
+    async fn buddy_multiple_waiters_all_served() {
+        let arena = Arc::new(
+            BuddyArena::builder(nz(4096), nz(512))
+                .build_async()
+                .unwrap(),
+        );
+        let buf1 = arena.allocate(nz(2048)).unwrap();
+        let buf2 = arena.allocate(nz(2048)).unwrap();
+
+        let a1 = Arc::clone(&arena);
+        let h1 = tokio::spawn(async move { a1.allocate_async(nz(2048)).await.capacity() });
+        let a2 = Arc::clone(&arena);
+        let h2 = tokio::spawn(async move { a2.allocate_async(nz(2048)).await.capacity() });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(buf1);
+        drop(buf2);
+
+        let (r1, r2) = tokio::join!(
+            timeout(Duration::from_secs(2), h1),
+            timeout(Duration::from_secs(2), h2),
+        );
+        assert_eq!(r1.unwrap().unwrap(), 2048);
+        assert_eq!(r2.unwrap().unwrap(), 2048);
+    }
+
+    #[tokio::test]
+    async fn buddy_large_request_unblocks_after_coalesce() {
+        let arena = Arc::new(
+            BuddyArena::builder(nz(4096), nz(512))
+                .build_async()
+                .unwrap(),
+        );
+        let buf1 = arena.allocate(nz(2048)).unwrap();
+        let buf2 = arena.allocate(nz(2048)).unwrap();
+
+        let arena2 = Arc::clone(&arena);
+        let handle = tokio::spawn(async move {
+            let buf = arena2.allocate_async(nz(4096)).await;
+            buf.capacity()
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(buf1);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        assert!(!handle.is_finished());
+        drop(buf2);
+
+        let cap = timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("should not timeout")
+            .expect("task should not panic");
+        assert_eq!(cap, 4096);
+    }
+
+    #[tokio::test]
+    async fn buddy_cancellation_does_not_leak() {
+        let arena = Arc::new(
+            BuddyArena::builder(nz(4096), nz(512))
+                .build_async()
+                .unwrap(),
+        );
+        let buf = arena.allocate(nz(4096)).unwrap();
+
+        let arena2 = Arc::clone(&arena);
+        let handle = tokio::spawn(async move { arena2.allocate_async(nz(512)).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        handle.abort();
+        let _ = handle.await;
+
+        drop(buf);
+
+        let _buf2 = arena.allocate(nz(4096)).unwrap();
     }
 }

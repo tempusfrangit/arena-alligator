@@ -20,4 +20,4 @@ pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
 
 #[cfg(feature = "async-alloc")]
-pub use async_alloc::{AsyncFixedArena, AsyncPolicy};
+pub use async_alloc::{AsyncBuddyArena, AsyncFixedArena, AsyncPolicy};
