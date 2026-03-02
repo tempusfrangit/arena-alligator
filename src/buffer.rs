@@ -3,7 +3,7 @@ use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 use bytes::buf::UninitSlice;
-use bytes::{BufMut, Bytes};
+use bytes::{BufMut, BytesMut, Bytes};
 
 use crate::arena::ArenaInner;
 use crate::error::BufferFullError;
@@ -21,6 +21,7 @@ pub struct Buffer {
     pub(crate) offset: usize,
     pub(crate) capacity: usize,
     pub(crate) len: usize,
+    pub(crate) spilled: Option<BytesMut>,
 }
 
 impl Buffer {
@@ -36,6 +37,7 @@ impl Buffer {
             offset,
             capacity,
             len: 0,
+            spilled: None,
         }
     }
 
@@ -46,12 +48,25 @@ impl Buffer {
 
     /// Bytes written so far.
     pub fn len(&self) -> usize {
-        self.len
+        if let Some(buf) = &self.spilled {
+            buf.len()
+        } else {
+            self.len
+        }
     }
 
     /// Whether no bytes have been written.
     pub fn is_empty(&self) -> bool {
-        self.len == 0
+        if let Some(buf) = &self.spilled {
+            buf.is_empty()
+        } else {
+            self.len == 0
+        }
+    }
+
+    /// Whether this buffer has spilled to the heap.
+    pub fn is_spilled(&self) -> bool {
+        self.spilled.is_some()
     }
 
     /// Try to append `data`. Returns `Err` with remaining/requested sizes if it won't fit.
@@ -77,14 +92,23 @@ impl Buffer {
     /// Consumes the buffer. The returned `Bytes` keeps the arena memory
     /// alive via `Arc`. When the last `Bytes` clone/slice drops, the
     /// slot is freed back to the arena.
+    ///
+    /// If the buffer has spilled to the heap, returns heap-backed `Bytes`
+    /// (the arena slot was already freed during spill).
     pub fn freeze(mut self) -> Bytes {
+        if let Some(spilled) = self.spilled.take() {
+            // SAFETY: inner is valid, ManuallyDrop prevents double-drop.
+            unsafe { ManuallyDrop::drop(&mut self.inner) };
+            std::mem::forget(self);
+            return spilled.freeze();
+        }
+
         // SAFETY: inner is valid and not yet dropped.
         let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
         let slot_idx = self.slot_idx;
         let offset = self.offset;
         let len = self.len;
 
-        // Slot ownership moves to BufferHandle; prevent Buffer::drop from freeing it.
         std::mem::forget(self);
 
         let handle = BufferHandle::new(inner, slot_idx, offset, len);
@@ -96,6 +120,29 @@ impl Buffer {
     /// Equivalent to `drop(buf)`. Exists for readability.
     pub fn abandon(self) {
         drop(self);
+    }
+
+    fn do_spill(&mut self) {
+        tracing::warn!(
+            slot = self.slot_idx,
+            capacity = self.capacity,
+            "arena buffer spilled to heap"
+        );
+
+        let mut buffer = BytesMut::with_capacity(self.len * 2);
+        // SAFETY: ptr + offset is valid for self.len bytes (written data).
+        let src = unsafe {
+            std::slice::from_raw_parts(self.inner.ptr.add(self.offset), self.len)
+        };
+        buffer.extend_from_slice(src);
+
+        self.inner.bitmap.free(self.slot_idx);
+        #[cfg(feature = "async-alloc")]
+        if let Some(waker) = &self.inner.waker {
+            waker.wake();
+        }
+
+        self.spilled = Some(buffer);
     }
 }
 
@@ -112,10 +159,12 @@ impl fmt::Debug for Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        self.inner.bitmap.free(self.slot_idx);
-        #[cfg(feature = "async-alloc")]
-        if let Some(waker) = &self.inner.waker {
-            waker.wake();
+        if self.spilled.is_none() {
+            self.inner.bitmap.free(self.slot_idx);
+            #[cfg(feature = "async-alloc")]
+            if let Some(waker) = &self.inner.waker {
+                waker.wake();
+            }
         }
         // SAFETY: inner is valid and not yet dropped.
         unsafe { ManuallyDrop::drop(&mut self.inner) };
@@ -126,10 +175,22 @@ impl Drop for Buffer {
 // writing to chunk_mut, and we track len correctly.
 unsafe impl BufMut for Buffer {
     fn remaining_mut(&self) -> usize {
-        self.capacity - self.len
+        if let Some(buf) = &self.spilled {
+            return buf.remaining_mut();
+        }
+        if self.inner.auto_spill {
+            usize::MAX
+        } else {
+            self.capacity - self.len
+        }
     }
 
     unsafe fn advance_mut(&mut self, cnt: usize) {
+        if let Some(buf) = &mut self.spilled {
+            // SAFETY: caller guarantees cnt bytes were initialized in chunk_mut.
+            unsafe { buf.advance_mut(cnt) };
+            return;
+        }
         assert!(
             self.len + cnt <= self.capacity,
             "arena buffer overflow: {} + {} > {}",
@@ -141,6 +202,13 @@ unsafe impl BufMut for Buffer {
     }
 
     fn chunk_mut(&mut self) -> &mut UninitSlice {
+        if self.spilled.is_some() {
+            return self.spilled.as_mut().unwrap().chunk_mut();
+        }
+        if self.inner.auto_spill && self.len >= self.capacity {
+            self.do_spill();
+            return self.spilled.as_mut().unwrap().chunk_mut();
+        }
         // SAFETY: ptr + offset + len is within the slot's allocated region.
         let ptr = unsafe { self.inner.ptr.add(self.offset + self.len) };
         let remaining = self.capacity - self.len;
@@ -233,5 +301,65 @@ mod tests {
         buf.put_slice(b"hello ");
         buf.put_slice(b"world");
         assert_eq!(buf.len(), 11);
+    }
+
+    #[test]
+    fn auto_spill_on_overflow() {
+        let arena = FixedArena::builder(nz(1), nz(8))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(b"12345678");
+        assert!(!buf.is_spilled());
+        buf.put_slice(b"overflow!");
+        assert!(buf.is_spilled());
+        assert_eq!(buf.len(), 17);
+    }
+
+    #[test]
+    fn auto_spill_freeze_produces_valid_bytes() {
+        let arena = FixedArena::builder(nz(1), nz(4))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(b"12345678");
+        assert!(buf.is_spilled());
+        let bytes = buf.freeze();
+        assert_eq!(&bytes[..], b"12345678");
+    }
+
+    #[test]
+    fn auto_spill_frees_arena_slot_immediately() {
+        let arena = FixedArena::builder(nz(1), nz(4))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(b"12345");
+        let _buf2 = arena.allocate().unwrap();
+    }
+
+    #[test]
+    fn auto_spill_remaining_mut_is_usize_max() {
+        let arena = FixedArena::builder(nz(1), nz(8))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let buf = arena.allocate().unwrap();
+        assert_eq!(buf.remaining_mut(), usize::MAX);
+    }
+
+    #[test]
+    fn auto_spill_abandon_frees_slot() {
+        let arena = FixedArena::builder(nz(1), nz(4))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(b"12345");
+        drop(buf);
+        assert!(arena.allocate().is_ok());
     }
 }

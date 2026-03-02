@@ -13,6 +13,7 @@ pub(crate) struct ArenaInner {
     pub(crate) slot_capacity: usize,
     pub(crate) slot_count: usize,
     pub(crate) bitmap: AtomicBitmap,
+    pub(crate) auto_spill: bool,
     #[cfg(feature = "async-alloc")]
     pub(crate) waker: Option<crate::async_alloc::WakerImpl>,
 }
@@ -61,6 +62,7 @@ impl FixedArena {
             slot_count,
             slot_capacity,
             alignment: 1,
+            auto_spill: false,
         }
     }
 
@@ -94,6 +96,7 @@ pub struct FixedArenaBuilder {
     slot_count: NonZeroUsize,
     slot_capacity: NonZeroUsize,
     alignment: usize,
+    auto_spill: bool,
 }
 
 impl FixedArenaBuilder {
@@ -103,6 +106,12 @@ impl FixedArenaBuilder {
     /// Use 4096 for O_DIRECT / DMA compatibility.
     pub fn alignment(mut self, n: usize) -> Self {
         self.alignment = n;
+        self
+    }
+
+    /// Enable auto-spill: overflow writes copy to heap, freeing the arena slot.
+    pub fn auto_spill(mut self) -> Self {
+        self.auto_spill = true;
         self
     }
 
@@ -136,6 +145,7 @@ impl FixedArenaBuilder {
             slot_capacity: aligned_capacity,
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
+            auto_spill: self.auto_spill,
             #[cfg(feature = "async-alloc")]
             waker: None,
         };
@@ -190,6 +200,7 @@ impl FixedArenaBuilder {
             slot_capacity: aligned_capacity,
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
+            auto_spill: self.auto_spill,
             waker: Some(waker),
         };
 
