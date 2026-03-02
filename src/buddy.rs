@@ -85,7 +85,9 @@ impl BuddyArena {
 
     /// Snapshot current allocator metrics.
     pub fn metrics(&self) -> BuddyArenaMetrics {
-        self.inner.metrics.buddy_snapshot()
+        self.inner
+            .metrics
+            .buddy_snapshot(self.inner.largest_free_block())
     }
 
     /// Allocate a buddy-backed buffer with at least `len` bytes of capacity.
@@ -181,6 +183,7 @@ impl BuddyArena {
         mut block_idx: usize,
         target_order: usize,
     ) -> (usize, usize) {
+        let mut split_steps = 0u64;
         while order > target_order {
             let child_order = order - 1;
             let left_child = block_idx * 2;
@@ -193,6 +196,11 @@ impl BuddyArena {
 
             order = child_order;
             block_idx = left_child;
+            split_steps += 1;
+        }
+
+        if split_steps > 0 {
+            self.inner.metrics.record_splits(split_steps);
         }
 
         (order, block_idx)
@@ -336,6 +344,7 @@ impl BuddyArenaInner {
             self.maybe_clear_summary(order);
             block_idx /= 2;
             order += 1;
+            self.metrics.record_coalesce();
         }
 
         self.nonempty_orders
@@ -352,6 +361,15 @@ impl BuddyArenaInner {
             self.nonempty_orders
                 .fetch_and(!(1usize << order), Ordering::AcqRel);
         }
+    }
+
+    fn largest_free_block(&self) -> usize {
+        for order in (0..=self.max_order).rev() {
+            if self.free_bitmaps[order].any_free() {
+                return self.block_size(order);
+            }
+        }
+        0
     }
 }
 
@@ -518,5 +536,46 @@ mod tests {
         assert_eq!(after_free.frees, 1);
         assert_eq!(after_free.bytes_live, 2048);
         drop(other);
+    }
+
+    #[test]
+    fn metrics_track_splits_and_largest_free_block() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+
+        let initial = arena.metrics();
+        assert_eq!(initial.splits, 0);
+        assert_eq!(initial.coalesces, 0);
+        assert_eq!(initial.largest_free_block, 4096);
+
+        let buf = arena.allocate(nz(700)).unwrap();
+        let after_split = arena.metrics();
+        assert_eq!(after_split.splits, 2);
+        assert_eq!(after_split.coalesces, 0);
+        assert_eq!(after_split.largest_free_block, 2048);
+
+        drop(buf);
+        let after_free = arena.metrics();
+        assert_eq!(after_free.coalesces, 2);
+        assert_eq!(after_free.largest_free_block, 4096);
+    }
+
+    #[test]
+    fn metrics_track_partial_coalesce() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+
+        let left = arena.allocate(nz(2048)).unwrap();
+        let right = arena.allocate(nz(2048)).unwrap();
+        let full = arena.metrics();
+        assert_eq!(full.largest_free_block, 0);
+
+        drop(left);
+        let half_free = arena.metrics();
+        assert_eq!(half_free.coalesces, 0);
+        assert_eq!(half_free.largest_free_block, 2048);
+
+        drop(right);
+        let fully_free = arena.metrics();
+        assert_eq!(fully_free.coalesces, 1);
+        assert_eq!(fully_free.largest_free_block, 4096);
     }
 }

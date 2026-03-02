@@ -36,6 +36,12 @@ pub struct BuddyArenaMetrics {
     pub bytes_reserved: usize,
     /// Total retained arena-backed capacity currently live.
     pub bytes_live: usize,
+    /// Number of buddy split steps performed.
+    pub splits: u64,
+    /// Number of buddy coalesce steps performed.
+    pub coalesces: u64,
+    /// Largest currently allocatable buddy block in bytes.
+    pub largest_free_block: usize,
 }
 
 pub(crate) struct MetricsState {
@@ -44,6 +50,8 @@ pub(crate) struct MetricsState {
     frees: AtomicU64,
     frozen: AtomicU64,
     spills: AtomicU64,
+    splits: AtomicU64,
+    coalesces: AtomicU64,
     bytes_reserved: usize,
     bytes_live: AtomicUsize,
 }
@@ -56,6 +64,8 @@ impl MetricsState {
             frees: AtomicU64::new(0),
             frozen: AtomicU64::new(0),
             spills: AtomicU64::new(0),
+            splits: AtomicU64::new(0),
+            coalesces: AtomicU64::new(0),
             bytes_reserved,
             bytes_live: AtomicUsize::new(0),
         }
@@ -83,6 +93,14 @@ impl MetricsState {
         self.spills.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_splits(&self, count: u64) {
+        self.splits.fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub(crate) fn record_coalesce(&self) {
+        self.coalesces.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn fixed_snapshot(&self) -> FixedArenaMetrics {
         FixedArenaMetrics {
             allocations_ok: self.allocations_ok.load(Ordering::Relaxed),
@@ -95,7 +113,7 @@ impl MetricsState {
         }
     }
 
-    pub(crate) fn buddy_snapshot(&self) -> BuddyArenaMetrics {
+    pub(crate) fn buddy_snapshot(&self, largest_free_block: usize) -> BuddyArenaMetrics {
         BuddyArenaMetrics {
             allocations_ok: self.allocations_ok.load(Ordering::Relaxed),
             allocations_failed: self.allocations_failed.load(Ordering::Relaxed),
@@ -104,6 +122,9 @@ impl MetricsState {
             spills: self.spills.load(Ordering::Relaxed),
             bytes_reserved: self.bytes_reserved,
             bytes_live: self.bytes_live.load(Ordering::Relaxed),
+            splits: self.splits.load(Ordering::Relaxed),
+            coalesces: self.coalesces.load(Ordering::Relaxed),
+            largest_free_block,
         }
     }
 }
