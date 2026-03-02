@@ -13,15 +13,31 @@ impl ArenaRef {
         match (self, allocation) {
             (ArenaRef::Fixed(inner), AllocationKind::Fixed { slot_idx }) => {
                 inner.bitmap.free(slot_idx);
+                inner.metrics.record_free(inner.slot_capacity);
                 #[cfg(feature = "async-alloc")]
                 if let Some(wake_handle) = &inner.wake_handle {
                     wake_handle.wake();
                 }
             }
             (ArenaRef::Buddy(inner), AllocationKind::Buddy { order, block_idx }) => {
+                inner.metrics.record_free(inner.block_size(order));
                 inner.release_block(order, block_idx);
             }
             _ => unreachable!("allocation kind must match owning arena"),
+        }
+    }
+
+    pub(crate) fn record_frozen(&self) {
+        match self {
+            ArenaRef::Fixed(inner) => inner.metrics.record_frozen(),
+            ArenaRef::Buddy(inner) => inner.metrics.record_frozen(),
+        }
+    }
+
+    pub(crate) fn record_spill(&self) {
+        match self {
+            ArenaRef::Fixed(inner) => inner.metrics.record_spill(),
+            ArenaRef::Buddy(inner) => inner.metrics.record_spill(),
         }
     }
 }

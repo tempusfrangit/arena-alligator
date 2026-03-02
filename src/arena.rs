@@ -6,6 +6,7 @@ use std::sync::Arc;
 use crate::bitmap::AtomicBitmap;
 use crate::buffer::Buffer;
 use crate::error::{AllocError, BuildError};
+use crate::metrics::{FixedArenaMetrics, MetricsState};
 
 pub(crate) struct ArenaInner {
     pub(crate) ptr: *mut u8,
@@ -14,6 +15,7 @@ pub(crate) struct ArenaInner {
     pub(crate) slot_count: usize,
     pub(crate) bitmap: AtomicBitmap,
     pub(crate) auto_spill: bool,
+    pub(crate) metrics: MetricsState,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
 }
@@ -76,11 +78,22 @@ impl FixedArena {
         self.inner.slot_capacity
     }
 
+    /// Snapshot current allocator metrics.
+    pub fn metrics(&self) -> FixedArenaMetrics {
+        self.inner.metrics.fixed_snapshot()
+    }
+
     /// Allocate a buffer. Returns `Err(AllocError::ArenaFull)` if all slots are in use.
     pub fn allocate(&self) -> Result<Buffer, AllocError> {
-        let slot_idx = self.inner.bitmap.try_alloc().ok_or(AllocError::ArenaFull)?;
+        let Some(slot_idx) = self.inner.bitmap.try_alloc() else {
+            self.inner.metrics.record_alloc_failure();
+            return Err(AllocError::ArenaFull);
+        };
 
         let offset = slot_idx * self.inner.slot_capacity;
+        self.inner
+            .metrics
+            .record_alloc_success(self.inner.slot_capacity);
 
         Ok(Buffer::new_fixed(
             Arc::clone(&self.inner),
@@ -147,6 +160,7 @@ impl FixedArenaBuilder {
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
             auto_spill: self.auto_spill,
+            metrics: MetricsState::new(total_size),
             #[cfg(feature = "async-alloc")]
             wake_handle: None,
         };
@@ -218,6 +232,7 @@ impl FixedArenaBuilder {
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
             auto_spill: self.auto_spill,
+            metrics: MetricsState::new(total_size),
             wake_handle: Some(crate::async_alloc::WakeHandle::new(Arc::clone(&waiters))),
         };
 
@@ -267,6 +282,31 @@ mod tests {
             .build()
             .unwrap_err();
         assert_eq!(err, BuildError::InvalidAlignment);
+    }
+
+    #[test]
+    fn metrics_track_allocate_free_and_failure() {
+        let arena = FixedArena::builder(nz(1), nz(64)).build().unwrap();
+
+        let initial = arena.metrics();
+        assert_eq!(initial.bytes_reserved, 64);
+        assert_eq!(initial.bytes_live, 0);
+
+        let buf = arena.allocate().unwrap();
+        let after_alloc = arena.metrics();
+        assert_eq!(after_alloc.allocations_ok, 1);
+        assert_eq!(after_alloc.allocations_failed, 0);
+        assert_eq!(after_alloc.bytes_live, 64);
+
+        assert_eq!(arena.allocate().unwrap_err(), AllocError::ArenaFull);
+        let after_fail = arena.metrics();
+        assert_eq!(after_fail.allocations_failed, 1);
+        assert_eq!(after_fail.bytes_live, 64);
+
+        drop(buf);
+        let after_free = arena.metrics();
+        assert_eq!(after_free.frees, 1);
+        assert_eq!(after_free.bytes_live, 0);
     }
 
     #[test]

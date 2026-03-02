@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::bitmap::AtomicBitmap;
 use crate::buffer::Buffer;
 use crate::error::{AllocError, BuildError};
+use crate::metrics::{BuddyArenaMetrics, MetricsState};
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct BuddyArenaInner {
@@ -18,6 +19,7 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) free_bitmaps: Box<[AtomicBitmap]>,
     pub(crate) nonempty_orders: AtomicUsize,
     pub(crate) auto_spill: bool,
+    pub(crate) metrics: MetricsState,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
 }
@@ -81,20 +83,30 @@ impl BuddyArena {
         self.inner.max_order
     }
 
+    /// Snapshot current allocator metrics.
+    pub fn metrics(&self) -> BuddyArenaMetrics {
+        self.inner.metrics.buddy_snapshot()
+    }
+
     /// Allocate a buddy-backed buffer with at least `len` bytes of capacity.
     pub fn allocate(&self, len: NonZeroUsize) -> Result<Buffer, AllocError> {
-        let target_order = self
-            .order_for_request(len.get())
-            .ok_or(AllocError::ArenaFull)?;
+        let target_order = self.order_for_request(len.get()).ok_or_else(|| {
+            self.inner.metrics.record_alloc_failure();
+            AllocError::ArenaFull
+        })?;
 
         let (order, block_idx) = self
             .try_allocate_from_summary(target_order)
             .or_else(|| self.try_allocate_from_full_scan(target_order))
-            .ok_or(AllocError::ArenaFull)?;
+            .ok_or_else(|| {
+                self.inner.metrics.record_alloc_failure();
+                AllocError::ArenaFull
+            })?;
 
         let (final_order, final_block_idx) = self.split_down(order, block_idx, target_order);
         let capacity = self.block_size(final_order);
         let offset = self.block_offset(final_order, final_block_idx);
+        self.inner.metrics.record_alloc_success(capacity);
 
         Ok(Buffer::new_buddy(
             Arc::clone(&self.inner),
@@ -272,6 +284,7 @@ impl BuddyArenaBuilder {
             free_bitmaps: free_bitmaps.into_boxed_slice(),
             nonempty_orders: AtomicUsize::new(1usize << max_order),
             auto_spill: self.auto_spill,
+            metrics: MetricsState::new(total_size),
             #[cfg(feature = "async-alloc")]
             wake_handle: waker,
         };
@@ -310,6 +323,10 @@ impl BuddyArenaBuilder {
 }
 
 impl BuddyArenaInner {
+    pub(crate) fn block_size(&self, order: usize) -> usize {
+        self.min_block_size << order
+    }
+
     pub(crate) fn release_block(&self, mut order: usize, mut block_idx: usize) {
         while order < self.max_order {
             let buddy_idx = block_idx ^ 1;
@@ -474,5 +491,32 @@ mod tests {
         drop(buf);
         assert_eq!(arena.free_block_count(arena.max_order()), 1);
         assert!(arena.is_block_free(arena.max_order(), 0));
+    }
+
+    #[test]
+    fn metrics_track_allocate_free_and_failure() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+
+        let initial = arena.metrics();
+        assert_eq!(initial.bytes_reserved, 4096);
+        assert_eq!(initial.bytes_live, 0);
+
+        let buf = arena.allocate(nz(700)).unwrap();
+        let after_alloc = arena.metrics();
+        assert_eq!(after_alloc.allocations_ok, 1);
+        assert_eq!(after_alloc.allocations_failed, 0);
+        assert_eq!(after_alloc.bytes_live, 1024);
+
+        let other = arena.allocate(nz(2048)).unwrap();
+        assert_eq!(arena.allocate(nz(2048)).unwrap_err(), AllocError::ArenaFull);
+        let after_fail = arena.metrics();
+        assert_eq!(after_fail.allocations_failed, 1);
+        assert_eq!(after_fail.bytes_live, 3072);
+
+        drop(buf);
+        let after_free = arena.metrics();
+        assert_eq!(after_free.frees, 1);
+        assert_eq!(after_free.bytes_live, 2048);
+        drop(other);
     }
 }

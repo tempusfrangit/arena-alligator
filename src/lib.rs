@@ -10,6 +10,7 @@ mod buddy;
 mod buffer;
 mod error;
 mod handle;
+mod metrics;
 
 #[cfg(feature = "async-alloc")]
 mod async_alloc;
@@ -18,6 +19,7 @@ pub use arena::{FixedArena, FixedArenaBuilder};
 pub use buddy::{BuddyArena, BuddyArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
+pub use metrics::{BuddyArenaMetrics, FixedArenaMetrics};
 
 #[cfg(feature = "async-alloc")]
 pub use async_alloc::{

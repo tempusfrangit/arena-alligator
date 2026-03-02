@@ -169,4 +169,22 @@ mod tests {
         };
         assert_eq!(&bytes[..], b"buddy persists");
     }
+
+    #[test]
+    fn freeze_metrics_track_retained_capacity() {
+        let arena = FixedArena::builder(nz(1), nz(64)).build().unwrap();
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(b"metrics");
+
+        let bytes = buf.freeze();
+        let frozen = arena.metrics();
+        assert_eq!(frozen.frozen, 1);
+        assert_eq!(frozen.frees, 0);
+        assert_eq!(frozen.bytes_live, 64);
+
+        drop(bytes);
+        let after_drop = arena.metrics();
+        assert_eq!(after_drop.frees, 1);
+        assert_eq!(after_drop.bytes_live, 0);
+    }
 }

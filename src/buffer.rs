@@ -137,6 +137,7 @@ impl Buffer {
             return spilled.freeze();
         }
 
+        self.owner.record_frozen();
         let ptr = self.ptr;
         // SAFETY: owner is valid and taken exactly once during freeze.
         let owner = unsafe { ManuallyDrop::take(&mut self.owner) };
@@ -165,6 +166,7 @@ impl Buffer {
         let src = unsafe { std::slice::from_raw_parts(self.ptr.add(self.offset), self.len) };
         buffer.extend_from_slice(src);
 
+        self.owner.record_spill();
         self.owner.release(self.allocation);
         self.released = true;
 
@@ -422,5 +424,29 @@ mod tests {
             .unwrap();
         let buf = arena.allocate(nz(700)).unwrap();
         assert_eq!(buf.remaining_mut(), usize::MAX);
+    }
+
+    #[test]
+    fn spill_metrics_increment_once_and_release_capacity() {
+        let arena = FixedArena::builder(nz(1), nz(8))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(b"12345678");
+        assert_eq!(arena.metrics().bytes_live, 8);
+
+        buf.put_slice(b"9");
+        let spilled = arena.metrics();
+        assert_eq!(spilled.spills, 1);
+        assert_eq!(spilled.frees, 1);
+        assert_eq!(spilled.bytes_live, 0);
+
+        let _bytes = buf.freeze();
+        let after_freeze = arena.metrics();
+        assert_eq!(after_freeze.spills, 1);
+        assert_eq!(after_freeze.frozen, 0);
+        assert_eq!(after_freeze.frees, 1);
+        assert_eq!(after_freeze.bytes_live, 0);
     }
 }
