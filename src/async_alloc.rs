@@ -1,11 +1,11 @@
 use std::fmt;
 use std::ops::Deref;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
-use crate::buffer::Buffer;
 use crate::FixedArena;
+use crate::buffer::Buffer;
 
 /// Policy for how `allocate_async` waits when the arena is full.
 pub enum AsyncPolicy {
@@ -198,7 +198,7 @@ mod tests {
     use std::sync::Arc;
 
     use bytes::BufMut;
-    use tokio::time::{timeout, Duration};
+    use tokio::time::{Duration, timeout};
 
     use crate::FixedArena;
 

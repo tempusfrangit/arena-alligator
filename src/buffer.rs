@@ -3,7 +3,7 @@ use std::mem::ManuallyDrop;
 use std::sync::Arc;
 
 use bytes::buf::UninitSlice;
-use bytes::{BufMut, BytesMut, Bytes};
+use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::arena::ArenaInner;
 use crate::error::BufferFullError;
@@ -131,9 +131,7 @@ impl Buffer {
 
         let mut buffer = BytesMut::with_capacity(self.len * 2);
         // SAFETY: ptr + offset is valid for self.len bytes (written data).
-        let src = unsafe {
-            std::slice::from_raw_parts(self.inner.ptr.add(self.offset), self.len)
-        };
+        let src = unsafe { std::slice::from_raw_parts(self.inner.ptr.add(self.offset), self.len) };
         buffer.extend_from_slice(src);
 
         self.inner.bitmap.free(self.slot_idx);

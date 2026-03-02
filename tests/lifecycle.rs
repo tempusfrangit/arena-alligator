@@ -28,7 +28,9 @@ fn freeze_bytes_slice_drop_lifecycle() {
 
     drop(hello);
     drop(world);
-    let _recovered = arena.allocate().expect("slot freed after all slices dropped");
+    let _recovered = arena
+        .allocate()
+        .expect("slot freed after all slices dropped");
 }
 
 #[test]
@@ -41,7 +43,10 @@ fn drop_without_freeze_returns_slot() {
     assert!(arena.allocate().is_err(), "slot held by buffer");
 
     drop(buf);
-    assert!(arena.allocate().is_ok(), "slot freed after drop without freeze");
+    assert!(
+        arena.allocate().is_ok(),
+        "slot freed after drop without freeze"
+    );
 }
 
 #[test]
@@ -78,7 +83,10 @@ fn auto_spill_drop_path() {
     // Slot already freed by spill, but we can still allocate after drop
     // to confirm no double-free or leak.
     drop(buf);
-    assert!(arena.allocate().is_ok(), "slot freed after spilled buffer dropped");
+    assert!(
+        arena.allocate().is_ok(),
+        "slot freed after spilled buffer dropped"
+    );
 }
 
 #[test]
@@ -143,7 +151,11 @@ fn concurrent_allocate_free_stress() {
     while let Ok(buf) = arena.allocate() {
         recovered.push(buf);
     }
-    assert_eq!(recovered.len(), slot_count, "all slots recovered at quiescence");
+    assert_eq!(
+        recovered.len(),
+        slot_count,
+        "all slots recovered at quiescence"
+    );
 }
 
 #[test]
