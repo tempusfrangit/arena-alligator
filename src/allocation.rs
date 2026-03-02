@@ -14,8 +14,8 @@ impl ArenaRef {
             (ArenaRef::Fixed(inner), AllocationKind::Fixed { slot_idx }) => {
                 inner.bitmap.free(slot_idx);
                 #[cfg(feature = "async-alloc")]
-                if let Some(waker) = &inner.waker {
-                    waker.wake();
+                if let Some(wake_handle) = &inner.wake_handle {
+                    wake_handle.wake();
                 }
             }
             (ArenaRef::Buddy(inner), AllocationKind::Buddy { order, block_idx }) => {

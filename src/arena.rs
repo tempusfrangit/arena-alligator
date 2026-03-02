@@ -15,7 +15,7 @@ pub(crate) struct ArenaInner {
     pub(crate) bitmap: AtomicBitmap,
     pub(crate) auto_spill: bool,
     #[cfg(feature = "async-alloc")]
-    pub(crate) waker: Option<crate::async_alloc::WakerImpl>,
+    pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
 }
 
 // SAFETY: Buffer discipline enforces exclusive access per slot:
@@ -148,7 +148,7 @@ impl FixedArenaBuilder {
             bitmap: AtomicBitmap::new(slot_count),
             auto_spill: self.auto_spill,
             #[cfg(feature = "async-alloc")]
-            waker: None,
+            wake_handle: None,
         };
 
         Ok(FixedArena {
@@ -164,6 +164,28 @@ impl FixedArenaBuilder {
         self,
         policy: crate::async_alloc::AsyncPolicy,
     ) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
+        let waiters = match policy {
+            crate::async_alloc::AsyncPolicy::Notify => {
+                crate::async_alloc::BuiltInWaiters::Notify(crate::async_alloc::NotifyWaiters::new())
+            }
+            crate::async_alloc::AsyncPolicy::TreiberWaiters => {
+                crate::async_alloc::BuiltInWaiters::Treiber(
+                    crate::async_alloc::TreiberWaiters::new(),
+                )
+            }
+        };
+
+        self.build_async_with(waiters)
+    }
+
+    /// Build an async-capable arena with a custom waiter policy.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::async_alloc::AsyncFixedArena<W>, BuildError>
+    where
+        W: crate::async_alloc::Waiter,
+    {
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
         }
@@ -187,14 +209,7 @@ impl FixedArenaBuilder {
             std::alloc::handle_alloc_error(layout);
         }
 
-        let waker = match policy {
-            crate::async_alloc::AsyncPolicy::Notify => {
-                crate::async_alloc::WakerImpl::Notify(tokio::sync::Notify::new())
-            }
-            crate::async_alloc::AsyncPolicy::TreiberWaiters => {
-                crate::async_alloc::WakerImpl::Treiber(crate::async_alloc::TreiberStack::new())
-            }
-        };
+        let waiters = Arc::new(waiters);
 
         let inner = ArenaInner {
             ptr,
@@ -203,12 +218,15 @@ impl FixedArenaBuilder {
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
             auto_spill: self.auto_spill,
-            waker: Some(waker),
+            wake_handle: Some(crate::async_alloc::WakeHandle::new(Arc::clone(&waiters))),
         };
 
-        Ok(crate::async_alloc::AsyncFixedArena::new(FixedArena {
-            inner: Arc::new(inner),
-        }))
+        Ok(crate::async_alloc::AsyncFixedArena::new(
+            FixedArena {
+                inner: Arc::new(inner),
+            },
+            waiters,
+        ))
     }
 }
 

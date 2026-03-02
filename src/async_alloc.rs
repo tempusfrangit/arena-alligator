@@ -1,8 +1,13 @@
 use std::fmt;
+use std::future::Future;
 use std::ops::Deref;
+use std::pin::Pin;
 use std::ptr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::task::{Context, Poll};
+
+use tokio::sync::futures::OwnedNotified;
 
 use crate::buffer::Buffer;
 use crate::{BuddyArena, FixedArena};
@@ -15,13 +20,115 @@ pub enum AsyncPolicy {
     TreiberWaiters,
 }
 
+/// Wait strategy used by async arena allocation.
+pub trait Waiter: Send + Sync + 'static {
+    /// Future returned when a waiter registers interest in allocation progress.
+    type Registration: WaitRegistration;
+
+    /// Register a waiter before retrying allocation.
+    fn register(&self) -> Self::Registration;
+
+    /// Wake one waiter after allocation state changes.
+    fn wake_one(&self);
+}
+
+/// Wait registration used by the shared retry loop.
+pub trait WaitRegistration: Future<Output = ()> {
+    /// Prepare the registration before the post-registration allocation retry.
+    fn prepare(self: Pin<&mut Self>);
+
+    /// Revoke the registration when the retry succeeds immediately.
+    fn revoke(self: Pin<&mut Self>);
+}
+
+pub(crate) trait WakeOne: Send + Sync {
+    fn wake_one(&self);
+}
+
+impl<W: Waiter> WakeOne for W {
+    fn wake_one(&self) {
+        Waiter::wake_one(self);
+    }
+}
+
+pub(crate) struct WakeHandle {
+    inner: Arc<dyn WakeOne>,
+}
+
+impl WakeHandle {
+    pub(crate) fn new<W: Waiter>(waiters: Arc<W>) -> Self {
+        let inner: Arc<dyn WakeOne> = waiters;
+        Self { inner }
+    }
+
+    pub(crate) fn wake(&self) {
+        self.inner.wake_one();
+    }
+}
+
+/// Notify-based waiter policy.
+#[derive(Clone, Default)]
+pub struct NotifyWaiters {
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl NotifyWaiters {
+    /// Create a notify-based waiter policy.
+    pub fn new() -> Self {
+        Self {
+            notify: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+}
+
+impl Waiter for NotifyWaiters {
+    type Registration = NotifyRegistration;
+
+    fn register(&self) -> Self::Registration {
+        NotifyRegistration {
+            future: self.notify.clone().notified_owned(),
+        }
+    }
+
+    fn wake_one(&self) {
+        self.notify.notify_one();
+    }
+}
+
+pub struct NotifyRegistration {
+    future: OwnedNotified,
+}
+
+impl WaitRegistration for NotifyRegistration {
+    fn prepare(self: Pin<&mut Self>) {
+        let _ = self.project_future().enable();
+    }
+
+    fn revoke(self: Pin<&mut Self>) {}
+}
+
+impl Future for NotifyRegistration {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.project_future().poll(cx)
+    }
+}
+
+impl NotifyRegistration {
+    fn project_future(self: Pin<&mut Self>) -> Pin<&mut OwnedNotified> {
+        // SAFETY: pinning `NotifyRegistration` also pins its `future` field.
+        unsafe { self.map_unchecked_mut(|this| &mut this.future) }
+    }
+}
+
 struct WaiterNode {
     next: AtomicPtr<WaiterNode>,
-    notify: tokio::sync::Notify,
+    notify: Arc<tokio::sync::Notify>,
     revoked: AtomicBool,
 }
 
-pub(crate) struct TreiberStack {
+struct TreiberStack {
     head: AtomicPtr<WaiterNode>,
 }
 
@@ -31,7 +138,7 @@ unsafe impl Send for TreiberStack {}
 unsafe impl Sync for TreiberStack {}
 
 impl TreiberStack {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self {
             head: AtomicPtr::new(ptr::null_mut()),
         }
@@ -59,7 +166,7 @@ impl TreiberStack {
     }
 
     /// Pop and wake the first non-revoked waiter. Skips tombstones.
-    pub(crate) fn wake_one(&self) {
+    fn wake_one(&self) {
         loop {
             let head = self.head.load(Ordering::Acquire);
             if head.is_null() {
@@ -97,6 +204,170 @@ impl Drop for TreiberStack {
     }
 }
 
+/// Lock-free LIFO waiter policy with per-waiter wake targeting.
+pub struct TreiberWaiters {
+    stack: Arc<TreiberStack>,
+}
+
+impl TreiberWaiters {
+    /// Create a Treiber-based waiter policy.
+    pub fn new() -> Self {
+        Self {
+            stack: Arc::new(TreiberStack::new()),
+        }
+    }
+}
+
+impl Default for TreiberWaiters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Waiter for TreiberWaiters {
+    type Registration = TreiberRegistration;
+
+    fn register(&self) -> Self::Registration {
+        let node = Arc::new(WaiterNode {
+            next: AtomicPtr::new(ptr::null_mut()),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            revoked: AtomicBool::new(false),
+        });
+
+        TreiberRegistration {
+            node: Arc::clone(&node),
+            stack: Arc::clone(&self.stack),
+            future: node.notify.clone().notified_owned(),
+            published: false,
+        }
+    }
+
+    fn wake_one(&self) {
+        self.stack.wake_one();
+    }
+}
+
+pub struct TreiberRegistration {
+    node: Arc<WaiterNode>,
+    stack: Arc<TreiberStack>,
+    future: OwnedNotified,
+    published: bool,
+}
+
+impl WaitRegistration for TreiberRegistration {
+    fn prepare(mut self: Pin<&mut Self>) {
+        let _ = self.as_mut().project_future().enable();
+        // SAFETY: updating `published` does not move the pinned future field.
+        let this = unsafe { self.as_mut().get_unchecked_mut() };
+        if !this.published {
+            this.stack.push(Arc::into_raw(Arc::clone(&this.node)));
+            this.published = true;
+        }
+    }
+
+    fn revoke(self: Pin<&mut Self>) {
+        self.node.revoked.store(true, Ordering::Release);
+    }
+}
+
+impl Future for TreiberRegistration {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.project_future().poll(cx)
+    }
+}
+
+impl TreiberRegistration {
+    fn project_future(self: Pin<&mut Self>) -> Pin<&mut OwnedNotified> {
+        // SAFETY: pinning `TreiberRegistration` also pins its `future` field.
+        unsafe { self.map_unchecked_mut(|this| &mut this.future) }
+    }
+}
+
+#[doc(hidden)]
+pub enum BuiltInWaiters {
+    Notify(NotifyWaiters),
+    Treiber(TreiberWaiters),
+}
+
+impl Waiter for BuiltInWaiters {
+    type Registration = BuiltInRegistration;
+
+    fn register(&self) -> Self::Registration {
+        match self {
+            Self::Notify(waiters) => BuiltInRegistration::Notify(waiters.register()),
+            Self::Treiber(waiters) => BuiltInRegistration::Treiber(waiters.register()),
+        }
+    }
+
+    fn wake_one(&self) {
+        match self {
+            Self::Notify(waiters) => Waiter::wake_one(waiters),
+            Self::Treiber(waiters) => Waiter::wake_one(waiters),
+        }
+    }
+}
+
+#[doc(hidden)]
+pub enum BuiltInRegistration {
+    Notify(NotifyRegistration),
+    Treiber(TreiberRegistration),
+}
+
+impl WaitRegistration for BuiltInRegistration {
+    fn prepare(self: Pin<&mut Self>) {
+        // SAFETY: pinning the enum pins the active registration variant in place.
+        unsafe {
+            match self.get_unchecked_mut() {
+                Self::Notify(registration) => Pin::new_unchecked(registration).prepare(),
+                Self::Treiber(registration) => Pin::new_unchecked(registration).prepare(),
+            }
+        }
+    }
+
+    fn revoke(self: Pin<&mut Self>) {
+        // SAFETY: pinning the enum pins the active registration variant in place.
+        unsafe {
+            match self.get_unchecked_mut() {
+                Self::Notify(registration) => Pin::new_unchecked(registration).revoke(),
+                Self::Treiber(registration) => Pin::new_unchecked(registration).revoke(),
+            }
+        }
+    }
+}
+
+impl Future for BuiltInRegistration {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: pinning the enum pins the active registration variant in place.
+        unsafe {
+            match self.get_unchecked_mut() {
+                Self::Notify(registration) => Pin::new_unchecked(registration).poll(cx),
+                Self::Treiber(registration) => Pin::new_unchecked(registration).poll(cx),
+            }
+        }
+    }
+}
+
+async fn allocate_with_waiter<W, T, F>(waiters: &W, mut try_allocate: F) -> T
+where
+    W: Waiter,
+    F: FnMut() -> Option<T>,
+{
+    loop {
+        let registration = waiters.register();
+        tokio::pin!(registration);
+        registration.as_mut().prepare();
+        if let Some(value) = try_allocate() {
+            registration.as_mut().revoke();
+            return value;
+        }
+        registration.await;
+    }
+}
+
 /// Async-capable wrapper around [`FixedArena`].
 ///
 /// Created via [`FixedArenaBuilder::build_async()`]. Provides
@@ -104,65 +375,28 @@ impl Drop for TreiberStack {
 /// until a slot becomes available, while sync methods remain accessible
 /// through `Deref<Target = FixedArena>`.
 #[derive(Clone)]
-pub struct AsyncFixedArena {
+pub struct AsyncFixedArena<W = BuiltInWaiters> {
     inner: FixedArena,
+    waiters: Arc<W>,
 }
 
-impl AsyncFixedArena {
-    pub(crate) fn new(inner: FixedArena) -> Self {
-        Self { inner }
+impl<W> AsyncFixedArena<W> {
+    pub(crate) fn new(inner: FixedArena, waiters: Arc<W>) -> Self {
+        Self { inner, waiters }
     }
+}
 
+impl<W: Waiter> AsyncFixedArena<W> {
     /// Allocate a buffer, waiting asynchronously if the arena is full.
     ///
     /// Returns once a slot becomes available. The bitmap is the source
     /// of truth; notifications are hints to retry.
     pub async fn allocate_async(&self) -> Buffer {
-        let waker = self
-            .inner
-            .inner
-            .waker
-            .as_ref()
-            .expect("allocate_async requires build_async()");
-        match waker {
-            WakerImpl::Notify(notify) => loop {
-                let notified = notify.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-                if let Ok(buf) = self.inner.allocate() {
-                    return buf;
-                }
-                notified.await;
-            },
-            WakerImpl::Treiber(stack) => loop {
-                if let Ok(buf) = self.inner.allocate() {
-                    return buf;
-                }
-
-                let node = Arc::new(WaiterNode {
-                    next: AtomicPtr::new(ptr::null_mut()),
-                    notify: tokio::sync::Notify::new(),
-                    revoked: AtomicBool::new(false),
-                });
-
-                let notified = node.notify.notified();
-                tokio::pin!(notified);
-                notified.as_mut().enable();
-
-                stack.push(Arc::into_raw(Arc::clone(&node)));
-
-                if let Ok(buf) = self.inner.allocate() {
-                    node.revoked.store(true, Ordering::Release);
-                    return buf;
-                }
-
-                notified.await;
-            },
-        }
+        allocate_with_waiter(self.waiters.as_ref(), || self.inner.allocate().ok()).await
     }
 }
 
-impl Deref for AsyncFixedArena {
+impl<W> Deref for AsyncFixedArena<W> {
     type Target = FixedArena;
 
     fn deref(&self) -> &Self::Target {
@@ -170,7 +404,7 @@ impl Deref for AsyncFixedArena {
     }
 }
 
-impl fmt::Debug for AsyncFixedArena {
+impl<W> fmt::Debug for AsyncFixedArena<W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AsyncFixedArena")
             .field("inner", &self.inner)
@@ -185,42 +419,28 @@ impl fmt::Debug for AsyncFixedArena {
 /// until a large-enough block becomes available, while sync methods remain
 /// accessible through `Deref<Target = BuddyArena>`.
 #[derive(Clone)]
-pub struct AsyncBuddyArena {
+pub struct AsyncBuddyArena<W = NotifyWaiters> {
     inner: BuddyArena,
+    waiters: Arc<W>,
 }
 
-impl AsyncBuddyArena {
-    pub(crate) fn new(inner: BuddyArena) -> Self {
-        Self { inner }
+impl<W> AsyncBuddyArena<W> {
+    pub(crate) fn new(inner: BuddyArena, waiters: Arc<W>) -> Self {
+        Self { inner, waiters }
     }
+}
 
+impl<W: Waiter> AsyncBuddyArena<W> {
     /// Allocate a buffer, waiting asynchronously if the arena is full.
     ///
     /// The buddy bitmaps remain the source of truth; notifications are hints
     /// to retry after free or coalesce publishes a usable block.
     pub async fn allocate_async(&self, len: std::num::NonZeroUsize) -> Buffer {
-        let waker = self
-            .inner
-            .inner
-            .waker
-            .as_ref()
-            .expect("allocate_async requires build_async()");
-        loop {
-            let notified = match waker {
-                WakerImpl::Notify(notify) => notify.notified(),
-                WakerImpl::Treiber(_) => unreachable!("buddy async uses notify waiters"),
-            };
-            tokio::pin!(notified);
-            notified.as_mut().enable();
-            if let Ok(buf) = self.inner.allocate(len) {
-                return buf;
-            }
-            notified.await;
-        }
+        allocate_with_waiter(self.waiters.as_ref(), || self.inner.allocate(len).ok()).await
     }
 }
 
-impl Deref for AsyncBuddyArena {
+impl<W> Deref for AsyncBuddyArena<W> {
     type Target = BuddyArena;
 
     fn deref(&self) -> &Self::Target {
@@ -228,7 +448,7 @@ impl Deref for AsyncBuddyArena {
     }
 }
 
-impl fmt::Debug for AsyncBuddyArena {
+impl<W> fmt::Debug for AsyncBuddyArena<W> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AsyncBuddyArena")
             .field("inner", &self.inner)
@@ -236,24 +456,11 @@ impl fmt::Debug for AsyncBuddyArena {
     }
 }
 
-pub(crate) enum WakerImpl {
-    Notify(tokio::sync::Notify),
-    Treiber(TreiberStack),
-}
-
-impl WakerImpl {
-    pub(crate) fn wake(&self) {
-        match self {
-            WakerImpl::Notify(notify) => notify.notify_one(),
-            WakerImpl::Treiber(stack) => stack.wake_one(),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use bytes::BufMut;
     use tokio::time::{Duration, timeout};
@@ -265,6 +472,76 @@ mod tests {
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
+    }
+
+    #[derive(Clone)]
+    struct CountingWaiters {
+        inner: NotifyWaiters,
+        registrations: Arc<AtomicUsize>,
+        wakes: Arc<AtomicUsize>,
+    }
+
+    impl CountingWaiters {
+        fn new() -> Self {
+            Self {
+                inner: NotifyWaiters::new(),
+                registrations: Arc::new(AtomicUsize::new(0)),
+                wakes: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn registrations(&self) -> usize {
+            self.registrations.load(AtomicOrdering::Relaxed)
+        }
+
+        fn wakes(&self) -> usize {
+            self.wakes.load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    struct CountingRegistration {
+        inner: NotifyRegistration,
+    }
+
+    impl Waiter for CountingWaiters {
+        type Registration = CountingRegistration;
+
+        fn register(&self) -> Self::Registration {
+            self.registrations.fetch_add(1, AtomicOrdering::Relaxed);
+            CountingRegistration {
+                inner: self.inner.register(),
+            }
+        }
+
+        fn wake_one(&self) {
+            self.wakes.fetch_add(1, AtomicOrdering::Relaxed);
+            Waiter::wake_one(&self.inner);
+        }
+    }
+
+    impl WaitRegistration for CountingRegistration {
+        fn prepare(self: Pin<&mut Self>) {
+            self.project_inner().prepare();
+        }
+
+        fn revoke(self: Pin<&mut Self>) {
+            self.project_inner().revoke();
+        }
+    }
+
+    impl Future for CountingRegistration {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+            self.project_inner().poll(cx)
+        }
+    }
+
+    impl CountingRegistration {
+        fn project_inner(self: Pin<&mut Self>) -> Pin<&mut NotifyRegistration> {
+            // SAFETY: pinning `CountingRegistration` also pins its inner registration.
+            unsafe { self.map_unchecked_mut(|this| &mut this.inner) }
+        }
     }
 
     #[tokio::test]
@@ -535,5 +812,53 @@ mod tests {
         drop(buf);
 
         let _buf2 = arena.allocate(nz(4096)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn fixed_custom_waiter_supported() {
+        let waiters = CountingWaiters::new();
+        let arena = Arc::new(
+            FixedArena::builder(nz(1), nz(32))
+                .build_async_with(waiters.clone())
+                .unwrap(),
+        );
+        let buf = arena.allocate().unwrap();
+
+        let arena2 = Arc::clone(&arena);
+        let handle = tokio::spawn(async move { arena2.allocate_async().await.capacity() });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(buf);
+
+        let cap = timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("should not timeout")
+            .expect("task should not panic");
+        assert_eq!(cap, 32);
+        assert!(waiters.registrations() >= 1);
+        assert!(waiters.wakes() >= 1);
+    }
+
+    #[tokio::test]
+    async fn buddy_custom_waiter_supported() {
+        let waiters = CountingWaiters::new();
+        let arena = Arc::new(
+            BuddyArena::builder(nz(4096), nz(512))
+                .build_async_with(waiters.clone())
+                .unwrap(),
+        );
+        let buf = arena.allocate(nz(2048)).unwrap();
+
+        let arena2 = Arc::clone(&arena);
+        let handle = tokio::spawn(async move { arena2.allocate_async(nz(2048)).await.capacity() });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(buf);
+
+        let cap = timeout(Duration::from_secs(2), handle)
+            .await
+            .expect("should not timeout")
+            .expect("task should not panic");
+        assert_eq!(cap, 2048);
+        assert!(waiters.registrations() >= 1);
+        assert!(waiters.wakes() >= 1);
     }
 }

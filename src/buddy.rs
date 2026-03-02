@@ -19,7 +19,7 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) nonempty_orders: AtomicUsize,
     pub(crate) auto_spill: bool,
     #[cfg(feature = "async-alloc")]
-    pub(crate) waker: Option<crate::async_alloc::WakerImpl>,
+    pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
 }
 
 // SAFETY: buddy allocations hand out disjoint blocks. Shared metadata access
@@ -233,7 +233,7 @@ impl BuddyArenaBuilder {
 
     fn build_inner(
         self,
-        #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::WakerImpl>,
+        #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::WakeHandle>,
     ) -> Result<BuddyArenaInner, BuildError> {
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
@@ -273,7 +273,7 @@ impl BuddyArenaBuilder {
             nonempty_orders: AtomicUsize::new(1usize << max_order),
             auto_spill: self.auto_spill,
             #[cfg(feature = "async-alloc")]
-            waker,
+            wake_handle: waker,
         };
 
         Ok(inner)
@@ -284,13 +284,28 @@ impl BuddyArenaBuilder {
 impl BuddyArenaBuilder {
     /// Build an async-capable buddy arena using notify-based waiters.
     pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
-        let inner = self.build_inner(Some(crate::async_alloc::WakerImpl::Notify(
-            tokio::sync::Notify::new(),
-        )))?;
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new())
+    }
 
-        Ok(crate::async_alloc::AsyncBuddyArena::new(BuddyArena {
-            inner: Arc::new(inner),
-        }))
+    /// Build an async-capable buddy arena with a custom waiter policy.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::async_alloc::AsyncBuddyArena<W>, BuildError>
+    where
+        W: crate::async_alloc::Waiter,
+    {
+        let waiters = Arc::new(waiters);
+        let inner = self.build_inner(Some(crate::async_alloc::WakeHandle::new(Arc::clone(
+            &waiters,
+        ))))?;
+
+        Ok(crate::async_alloc::AsyncBuddyArena::new(
+            BuddyArena {
+                inner: Arc::new(inner),
+            },
+            waiters,
+        ))
     }
 }
 
@@ -310,8 +325,8 @@ impl BuddyArenaInner {
             .fetch_or(1usize << order, Ordering::Release);
         self.free_bitmaps[order].free(block_idx);
         #[cfg(feature = "async-alloc")]
-        if let Some(waker) = &self.waker {
-            waker.wake();
+        if let Some(wake_handle) = &self.wake_handle {
+            wake_handle.wake();
         }
     }
 
