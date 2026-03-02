@@ -36,12 +36,17 @@ run = 'cargo clippy --fix'
 [tasks.test]
 description = "Run tests"
 run = [
-    { task = "test:nextest" }
+    { task = "test:nextest" },
+    { task = "test:all-features" },
 ]
 
 [tasks."test:nextest"]
 description = "Run tests with nextest"
 run = 'cargo nextest run'
+
+[tasks."test:all-features"]
+description = "Run tests with all features enabled"
+run = 'cargo test --all-features'
 
 [tasks."test:cargo"]
 description = "Run tests with `cargo test`"
