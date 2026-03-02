@@ -60,3 +60,7 @@ run = 'cargo deny check'
 [tasks.build]
 description = "Build arena alligator"
 run = 'cargo build'
+
+[tasks.bench]
+description = "Run allocator benchmarks"
+run = 'cargo bench --bench allocator'

@@ -12,8 +12,13 @@ tokio = { version = "1", features = ["sync"], optional = true }
 tracing = "0.1"
 
 [dev-dependencies]
+criterion = "0.5"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [features]
 default = []
 async-alloc = ["dep:tokio"]
+
+[[bench]]
+name = "allocator"
+harness = false

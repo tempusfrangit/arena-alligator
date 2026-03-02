@@ -20,6 +20,9 @@
 !/tests/
 !/tests/**/
 !/tests/**/*.rs
+!/benches/
+!/benches/**/
+!/benches/**/*.rs
 
 # Tooling
 !/.github/
@@ -37,4 +40,3 @@
 #/ ignore top-level target
 target
 debug
-
