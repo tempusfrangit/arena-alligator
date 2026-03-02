@@ -124,7 +124,8 @@ impl FixedArenaBuilder {
         let slot_count = self.slot_count.get();
         let slot_capacity = self.slot_capacity.get();
 
-        let aligned_capacity = align_up(slot_capacity, self.alignment);
+        let aligned_capacity =
+            align_up(slot_capacity, self.alignment).ok_or(BuildError::SizeOverflow)?;
 
         let total_size = slot_count
             .checked_mul(aligned_capacity)
@@ -170,7 +171,8 @@ impl FixedArenaBuilder {
         let slot_count = self.slot_count.get();
         let slot_capacity = self.slot_capacity.get();
 
-        let aligned_capacity = align_up(slot_capacity, self.alignment);
+        let aligned_capacity =
+            align_up(slot_capacity, self.alignment).ok_or(BuildError::SizeOverflow)?;
 
         let total_size = slot_count
             .checked_mul(aligned_capacity)
@@ -210,8 +212,9 @@ impl FixedArenaBuilder {
     }
 }
 
-fn align_up(value: usize, alignment: usize) -> usize {
-    (value + alignment - 1) & !(alignment - 1)
+fn align_up(value: usize, alignment: usize) -> Option<usize> {
+    let rounded = value.checked_add(alignment - 1)?;
+    Some(rounded & !(alignment - 1))
 }
 
 #[cfg(test)]
@@ -251,6 +254,15 @@ mod tests {
     #[test]
     fn build_size_overflow_fails() {
         let err = FixedArena::builder(nz(usize::MAX), nz(2))
+            .build()
+            .unwrap_err();
+        assert_eq!(err, BuildError::SizeOverflow);
+    }
+
+    #[test]
+    fn alignment_rounding_overflow_fails() {
+        let err = FixedArena::builder(nz(1), nz(usize::MAX))
+            .alignment(2)
             .build()
             .unwrap_err();
         assert_eq!(err, BuildError::SizeOverflow);
