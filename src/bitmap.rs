@@ -121,6 +121,24 @@ impl AtomicBitmap {
         debug_assert!(prev & mask == 0, "double free");
     }
 
+    pub(crate) fn try_claim_exact(&self, slot: usize) -> bool {
+        debug_assert!(slot < self.slot_count, "slot index out of bounds");
+        let word_idx = slot / BITS_PER_WORD;
+        let mask = (1 as Word) << (slot % BITS_PER_WORD) as u32;
+        let prev = self.words[word_idx].0.fetch_and(!mask, Ordering::AcqRel);
+        prev & mask != 0
+    }
+
+    pub(crate) fn any_free(&self) -> bool {
+        let actual_words = self.slot_count.div_ceil(BITS_PER_WORD);
+        for word_idx in 0..actual_words {
+            if self.words[word_idx].0.load(Ordering::Acquire) != 0 {
+                return true;
+            }
+        }
+        false
+    }
+
     pub(crate) fn is_free(&self, slot: usize) -> bool {
         debug_assert!(slot < self.slot_count, "slot index out of bounds");
         let word_idx = slot / BITS_PER_WORD;

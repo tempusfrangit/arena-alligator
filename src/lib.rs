@@ -3,6 +3,7 @@
 
 //! Arena allocator producing `bytes::Bytes` via `from_owner`.
 
+mod allocation;
 mod arena;
 mod bitmap;
 mod buddy;

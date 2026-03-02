@@ -82,7 +82,7 @@ impl FixedArena {
 
         let offset = slot_idx * self.inner.slot_capacity;
 
-        Ok(Buffer::new(
+        Ok(Buffer::new_fixed(
             Arc::clone(&self.inner),
             slot_idx,
             offset,

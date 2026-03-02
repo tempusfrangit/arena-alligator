@@ -1,21 +1,31 @@
-use std::sync::Arc;
-
-use crate::arena::ArenaInner;
+use crate::allocation::{AllocationKind, ArenaRef};
 
 /// Internal owner for frozen arena memory. Dropped when the last
 /// `Bytes` clone/slice is dropped, freeing the slot back to the arena.
 pub(crate) struct BufferHandle {
-    inner: Arc<ArenaInner>,
-    slot_idx: usize,
+    inner: ArenaRef,
+    allocation: AllocationKind,
+    ptr: *mut u8,
     offset: usize,
     len: usize,
 }
 
+// SAFETY: BufferHandle only exposes immutable reads after freeze. The owning
+// arena ref keeps the backing memory alive until the final frozen owner drops.
+unsafe impl Send for BufferHandle {}
+
 impl BufferHandle {
-    pub(crate) fn new(inner: Arc<ArenaInner>, slot_idx: usize, offset: usize, len: usize) -> Self {
+    pub(crate) fn new(
+        inner: ArenaRef,
+        allocation: AllocationKind,
+        ptr: *mut u8,
+        offset: usize,
+        len: usize,
+    ) -> Self {
         Self {
             inner,
-            slot_idx,
+            allocation,
+            ptr,
             offset,
             len,
         }
@@ -24,20 +34,15 @@ impl BufferHandle {
 
 impl AsRef<[u8]> for BufferHandle {
     fn as_ref(&self) -> &[u8] {
-        // SAFETY: Arc<ArenaInner> keeps the allocation alive.
+        // SAFETY: the owning arena ref keeps the allocation alive.
         // Data is immutable after freeze consumed the Buffer.
-        unsafe { std::slice::from_raw_parts(self.inner.ptr.add(self.offset), self.len) }
+        unsafe { std::slice::from_raw_parts(self.ptr.add(self.offset), self.len) }
     }
 }
 
 impl Drop for BufferHandle {
     fn drop(&mut self) {
-        // Release in bitmap.free() pairs with AcqRel in try_alloc's fetch_and.
-        self.inner.bitmap.free(self.slot_idx);
-        #[cfg(feature = "async-alloc")]
-        if let Some(waker) = &self.inner.waker {
-            waker.wake();
-        }
+        self.inner.release(self.allocation);
     }
 }
 

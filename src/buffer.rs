@@ -5,7 +5,9 @@ use std::sync::Arc;
 use bytes::buf::UninitSlice;
 use bytes::{BufMut, Bytes, BytesMut};
 
+use crate::allocation::{AllocationKind, ArenaRef};
 use crate::arena::ArenaInner;
+use crate::buddy::BuddyArenaInner;
 use crate::error::BufferFullError;
 use crate::handle::BufferHandle;
 
@@ -16,27 +18,62 @@ use crate::handle::BufferHandle;
 ///
 /// Dropping without freezing returns the slot to the arena.
 pub struct Buffer {
-    pub(crate) inner: ManuallyDrop<Arc<ArenaInner>>,
-    pub(crate) slot_idx: usize,
+    pub(crate) owner: ManuallyDrop<ArenaRef>,
+    pub(crate) allocation: AllocationKind,
+    pub(crate) ptr: *mut u8,
+    pub(crate) auto_spill: bool,
     pub(crate) offset: usize,
     pub(crate) capacity: usize,
     pub(crate) len: usize,
+    pub(crate) released: bool,
     pub(crate) spilled: Option<BytesMut>,
 }
 
+// SAFETY: Buffer has exclusive access to its allocation while writable.
+// The raw pointer is anchored by the owning arena ref and only used within
+// the allocation bounds described by offset/capacity.
+unsafe impl Send for Buffer {}
+
 impl Buffer {
-    pub(crate) fn new(
+    pub(crate) fn new_fixed(
         inner: Arc<ArenaInner>,
         slot_idx: usize,
         offset: usize,
         capacity: usize,
     ) -> Self {
+        let ptr = inner.ptr;
+        let auto_spill = inner.auto_spill;
         Self {
-            inner: ManuallyDrop::new(inner),
-            slot_idx,
+            owner: ManuallyDrop::new(ArenaRef::Fixed(inner)),
+            allocation: AllocationKind::Fixed { slot_idx },
+            ptr,
+            auto_spill,
             offset,
             capacity,
             len: 0,
+            released: false,
+            spilled: None,
+        }
+    }
+
+    pub(crate) fn new_buddy(
+        inner: Arc<BuddyArenaInner>,
+        order: usize,
+        block_idx: usize,
+        offset: usize,
+        capacity: usize,
+    ) -> Self {
+        let ptr = inner.ptr;
+        let auto_spill = inner.auto_spill;
+        Self {
+            owner: ManuallyDrop::new(ArenaRef::Buddy(inner)),
+            allocation: AllocationKind::Buddy { order, block_idx },
+            ptr,
+            auto_spill,
+            offset,
+            capacity,
+            len: 0,
+            released: false,
             spilled: None,
         }
     }
@@ -97,21 +134,19 @@ impl Buffer {
     /// (the arena slot was already freed during spill).
     pub fn freeze(mut self) -> Bytes {
         if let Some(spilled) = self.spilled.take() {
-            // SAFETY: inner is valid, ManuallyDrop prevents double-drop.
-            unsafe { ManuallyDrop::drop(&mut self.inner) };
-            std::mem::forget(self);
             return spilled.freeze();
         }
 
-        // SAFETY: inner is valid and not yet dropped.
-        let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
-        let slot_idx = self.slot_idx;
+        let ptr = self.ptr;
+        // SAFETY: owner is valid and taken exactly once during freeze.
+        let owner = unsafe { ManuallyDrop::take(&mut self.owner) };
+        let allocation = self.allocation;
         let offset = self.offset;
         let len = self.len;
 
         std::mem::forget(self);
 
-        let handle = BufferHandle::new(inner, slot_idx, offset, len);
+        let handle = BufferHandle::new(owner, allocation, ptr, offset, len);
         Bytes::from_owner(handle)
     }
 
@@ -123,22 +158,15 @@ impl Buffer {
     }
 
     fn do_spill(&mut self) {
-        tracing::warn!(
-            slot = self.slot_idx,
-            capacity = self.capacity,
-            "arena buffer spilled to heap"
-        );
+        tracing::warn!(capacity = self.capacity, "arena buffer spilled to heap");
 
         let mut buffer = BytesMut::with_capacity(self.len * 2);
         // SAFETY: ptr + offset is valid for self.len bytes (written data).
-        let src = unsafe { std::slice::from_raw_parts(self.inner.ptr.add(self.offset), self.len) };
+        let src = unsafe { std::slice::from_raw_parts(self.ptr.add(self.offset), self.len) };
         buffer.extend_from_slice(src);
 
-        self.inner.bitmap.free(self.slot_idx);
-        #[cfg(feature = "async-alloc")]
-        if let Some(waker) = &self.inner.waker {
-            waker.wake();
-        }
+        self.owner.release(self.allocation);
+        self.released = true;
 
         self.spilled = Some(buffer);
     }
@@ -147,7 +175,7 @@ impl Buffer {
 impl fmt::Debug for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Buffer")
-            .field("slot_idx", &self.slot_idx)
+            .field("allocation", &self.allocation)
             .field("offset", &self.offset)
             .field("capacity", &self.capacity)
             .field("len", &self.len)
@@ -157,15 +185,11 @@ impl fmt::Debug for Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        if self.spilled.is_none() {
-            self.inner.bitmap.free(self.slot_idx);
-            #[cfg(feature = "async-alloc")]
-            if let Some(waker) = &self.inner.waker {
-                waker.wake();
-            }
+        if !self.released {
+            self.owner.release(self.allocation);
         }
-        // SAFETY: inner is valid and not yet dropped.
-        unsafe { ManuallyDrop::drop(&mut self.inner) };
+        // SAFETY: owner is valid unless taken during freeze.
+        unsafe { ManuallyDrop::drop(&mut self.owner) };
     }
 }
 
@@ -176,7 +200,7 @@ unsafe impl BufMut for Buffer {
         if let Some(buf) = &self.spilled {
             return buf.remaining_mut();
         }
-        if self.inner.auto_spill {
+        if self.auto_spill {
             usize::MAX
         } else {
             self.capacity - self.len
@@ -203,12 +227,12 @@ unsafe impl BufMut for Buffer {
         if self.spilled.is_some() {
             return self.spilled.as_mut().unwrap().chunk_mut();
         }
-        if self.inner.auto_spill && self.len >= self.capacity {
+        if self.auto_spill && self.len >= self.capacity {
             self.do_spill();
             return self.spilled.as_mut().unwrap().chunk_mut();
         }
         // SAFETY: ptr + offset + len is within the slot's allocated region.
-        let ptr = unsafe { self.inner.ptr.add(self.offset + self.len) };
+        let ptr = unsafe { self.ptr.add(self.offset + self.len) };
         let remaining = self.capacity - self.len;
         // SAFETY: ptr is valid for remaining bytes, exclusively accessed by this Buffer.
         unsafe { UninitSlice::from_raw_parts_mut(ptr, remaining) }

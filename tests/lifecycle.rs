@@ -1,4 +1,4 @@
-use arena_alligator::{AllocError, FixedArena};
+use arena_alligator::{AllocError, BuddyArena, FixedArena};
 use bytes::BufMut;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -239,4 +239,54 @@ fn mixed_freeze_and_abandon_all_slots_recover() {
         recovered.push(buf);
     }
     assert_eq!(recovered.len(), 8, "all 8 slots recovered");
+}
+
+#[test]
+fn buddy_drop_without_freeze_returns_space() {
+    let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+
+    let mut buf = arena.allocate(nz(700)).unwrap();
+    buf.put_slice(b"buddy buffer");
+
+    let _large = arena.allocate(nz(2048)).unwrap();
+    assert_eq!(
+        arena.allocate(nz(2048)).unwrap_err(),
+        AllocError::ArenaFull,
+        "remaining space is too fragmented for another 2 KiB block"
+    );
+
+    drop(buf);
+
+    assert!(
+        arena.allocate(nz(2048)).is_ok(),
+        "dropping the 1 KiB block should restore a contiguous 2 KiB region"
+    );
+}
+
+#[test]
+fn buddy_mixed_size_churn_recovers_full_arena() {
+    let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+
+    let a = arena.allocate(nz(512)).unwrap();
+    let b = arena.allocate(nz(1500)).unwrap();
+    let c = arena.allocate(nz(512)).unwrap();
+    let d = arena.allocate(nz(512)).unwrap();
+    let e = arena.allocate(nz(512)).unwrap();
+
+    assert_eq!(arena.allocate(nz(512)).unwrap_err(), AllocError::ArenaFull);
+
+    drop(c);
+    drop(a);
+    assert_eq!(
+        arena.allocate(nz(4096)).unwrap_err(),
+        AllocError::ArenaFull,
+        "the remaining live allocations still block full-arena coalescing"
+    );
+
+    drop(d);
+    drop(e);
+    drop(b);
+
+    let whole = arena.allocate(nz(4096)).unwrap();
+    assert_eq!(whole.capacity(), 4096);
 }

@@ -2,10 +2,11 @@ use std::alloc::Layout;
 use std::fmt;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::bitmap::AtomicBitmap;
-use crate::error::BuildError;
+use crate::buffer::Buffer;
+use crate::error::{AllocError, BuildError};
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct BuddyArenaInner {
@@ -78,6 +79,30 @@ impl BuddyArena {
         self.inner.max_order
     }
 
+    /// Allocate a buddy-backed buffer with at least `len` bytes of capacity.
+    pub fn allocate(&self, len: NonZeroUsize) -> Result<Buffer, AllocError> {
+        let target_order = self
+            .order_for_request(len.get())
+            .ok_or(AllocError::ArenaFull)?;
+
+        let (order, block_idx) = self
+            .try_allocate_from_summary(target_order)
+            .or_else(|| self.try_allocate_from_full_scan(target_order))
+            .ok_or(AllocError::ArenaFull)?;
+
+        let (final_order, final_block_idx) = self.split_down(order, block_idx, target_order);
+        let capacity = self.block_size(final_order);
+        let offset = self.block_offset(final_order, final_block_idx);
+
+        Ok(Buffer::new_buddy(
+            Arc::clone(&self.inner),
+            final_order,
+            final_block_idx,
+            offset,
+            capacity,
+        ))
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn auto_spill_enabled(&self) -> bool {
         self.inner.auto_spill
@@ -98,6 +123,73 @@ impl BuddyArena {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn is_block_free(&self, order: usize, block_idx: usize) -> bool {
         self.inner.free_bitmaps[order].is_free(block_idx)
+    }
+
+    fn order_for_request(&self, len: usize) -> Option<usize> {
+        let size = len.max(self.inner.min_block_size).next_power_of_two();
+        if size > self.inner.total_size {
+            return None;
+        }
+        Some(size.trailing_zeros() as usize - self.inner.min_block_size.trailing_zeros() as usize)
+    }
+
+    fn try_allocate_from_summary(&self, target_order: usize) -> Option<(usize, usize)> {
+        let summary = self.inner.nonempty_orders.load(Ordering::Acquire);
+        self.try_allocate_from_orders(target_order, Some(summary))
+    }
+
+    fn try_allocate_from_full_scan(&self, target_order: usize) -> Option<(usize, usize)> {
+        self.try_allocate_from_orders(target_order, None)
+    }
+
+    fn try_allocate_from_orders(
+        &self,
+        target_order: usize,
+        summary: Option<usize>,
+    ) -> Option<(usize, usize)> {
+        for order in target_order..=self.inner.max_order {
+            if let Some(bits) = summary
+                && bits & (1usize << order) == 0
+            {
+                continue;
+            }
+            if let Some(block_idx) = self.inner.free_bitmaps[order].try_alloc() {
+                self.inner.maybe_clear_summary(order);
+                return Some((order, block_idx));
+            }
+        }
+        None
+    }
+
+    fn split_down(
+        &self,
+        mut order: usize,
+        mut block_idx: usize,
+        target_order: usize,
+    ) -> (usize, usize) {
+        while order > target_order {
+            let child_order = order - 1;
+            let left_child = block_idx * 2;
+            let right_child = left_child + 1;
+
+            self.inner
+                .nonempty_orders
+                .fetch_or(1usize << child_order, Ordering::Release);
+            self.inner.free_bitmaps[child_order].free(right_child);
+
+            order = child_order;
+            block_idx = left_child;
+        }
+
+        (order, block_idx)
+    }
+
+    fn block_size(&self, order: usize) -> usize {
+        self.inner.min_block_size << order
+    }
+
+    fn block_offset(&self, order: usize, block_idx: usize) -> usize {
+        block_idx * self.block_size(order)
     }
 }
 
@@ -170,6 +262,31 @@ impl BuddyArenaBuilder {
         Ok(BuddyArena {
             inner: Arc::new(inner),
         })
+    }
+}
+
+impl BuddyArenaInner {
+    pub(crate) fn release_block(&self, mut order: usize, mut block_idx: usize) {
+        while order < self.max_order {
+            let buddy_idx = block_idx ^ 1;
+            if !self.free_bitmaps[order].try_claim_exact(buddy_idx) {
+                break;
+            }
+            self.maybe_clear_summary(order);
+            block_idx /= 2;
+            order += 1;
+        }
+
+        self.nonempty_orders
+            .fetch_or(1usize << order, Ordering::Release);
+        self.free_bitmaps[order].free(block_idx);
+    }
+
+    fn maybe_clear_summary(&self, order: usize) {
+        if !self.free_bitmaps[order].any_free() {
+            self.nonempty_orders
+                .fetch_and(!(1usize << order), Ordering::AcqRel);
+        }
     }
 }
 
@@ -275,6 +392,38 @@ mod tests {
         }
 
         assert_eq!(arena.nonempty_orders(), 1 << arena.max_order());
+        assert_eq!(arena.free_block_count(arena.max_order()), 1);
+        assert!(arena.is_block_free(arena.max_order(), 0));
+    }
+
+    #[test]
+    fn allocate_rounds_up_request_size() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let buf = arena.allocate(nz(700)).unwrap();
+        assert_eq!(buf.capacity(), 1024);
+    }
+
+    #[test]
+    fn allocate_exhausts_large_block() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let _buf = arena.allocate(nz(4096)).unwrap();
+        assert_eq!(arena.allocate(nz(512)).unwrap_err(), AllocError::ArenaFull);
+    }
+
+    #[test]
+    fn split_path_publishes_sibling_blocks() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let _buf = arena.allocate(nz(512)).unwrap();
+        assert!(arena.is_block_free(2, 1));
+        assert!(arena.is_block_free(1, 1));
+        assert!(arena.is_block_free(0, 1));
+    }
+
+    #[test]
+    fn coalesce_path_restores_top_block() {
+        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let buf = arena.allocate(nz(512)).unwrap();
+        drop(buf);
         assert_eq!(arena.free_block_count(arena.max_order()), 1);
         assert!(arena.is_block_free(arena.max_order(), 0));
     }
