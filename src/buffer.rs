@@ -243,7 +243,7 @@ unsafe impl BufMut for Buffer {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use crate::FixedArena;
+    use crate::{BuddyArena, FixedArena};
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
@@ -383,5 +383,44 @@ mod tests {
         buf.put_slice(b"12345");
         drop(buf);
         assert!(arena.allocate().is_ok());
+    }
+
+    #[test]
+    fn buddy_auto_spill_on_overflow() {
+        let arena = BuddyArena::builder(nz(4096), nz(512))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(&vec![b'a'; 1024]);
+        assert!(!buf.is_spilled());
+        buf.put_slice(b"overflow");
+        assert!(buf.is_spilled());
+        assert_eq!(buf.len(), 1032);
+    }
+
+    #[test]
+    fn buddy_auto_spill_freeze_produces_valid_bytes() {
+        let arena = BuddyArena::builder(nz(4096), nz(512))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(&vec![b'x'; 1024]);
+        buf.put_slice(b"spill");
+        assert!(buf.is_spilled());
+        let bytes = buf.freeze();
+        assert_eq!(bytes.len(), 1029);
+        assert_eq!(&bytes[1024..], b"spill");
+    }
+
+    #[test]
+    fn buddy_auto_spill_remaining_mut_is_usize_max() {
+        let arena = BuddyArena::builder(nz(4096), nz(512))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let buf = arena.allocate(nz(700)).unwrap();
+        assert_eq!(buf.remaining_mut(), usize::MAX);
     }
 }

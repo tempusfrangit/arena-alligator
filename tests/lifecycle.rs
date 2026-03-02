@@ -325,3 +325,53 @@ fn buddy_freeze_bytes_slice_drop_lifecycle() {
         "the buddy block should release after the final slice drops"
     );
 }
+
+#[test]
+fn buddy_auto_spill_freeze_path() {
+    let arena = BuddyArena::builder(nz(4096), nz(512))
+        .auto_spill()
+        .build()
+        .unwrap();
+
+    let mut buf = arena.allocate(nz(700)).unwrap();
+    buf.put_slice(&vec![b'a'; 1024]);
+    assert!(!buf.is_spilled());
+
+    buf.put_slice(&vec![b'b'; 2048]);
+    assert!(buf.is_spilled());
+    assert!(
+        arena.allocate(nz(4096)).is_ok(),
+        "spill should release the buddy block immediately"
+    );
+
+    let bytes = buf.freeze();
+    assert_eq!(bytes.len(), 3072);
+    assert!(
+        arena.allocate(nz(4096)).is_ok(),
+        "freezing spilled bytes should not retain any buddy allocation"
+    );
+}
+
+#[test]
+fn buddy_auto_spill_drop_path() {
+    let arena = BuddyArena::builder(nz(4096), nz(512))
+        .auto_spill()
+        .build()
+        .unwrap();
+
+    let mut buf = arena.allocate(nz(700)).unwrap();
+    buf.put_slice(&vec![b'a'; 1024]);
+    buf.put_slice(&vec![b'b'; 2048]);
+    assert!(buf.is_spilled());
+
+    let whole = arena.allocate(nz(4096)).unwrap();
+    assert_eq!(whole.capacity(), 4096);
+    drop(whole);
+
+    assert!(
+        arena.allocate(nz(4096)).is_ok(),
+        "spilling should release the buddy block before the spilled buffer drops"
+    );
+
+    drop(buf);
+}
