@@ -11,8 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  validate:
-    name: Validate (stable)
+  fmt:
+    name: Fmt
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -27,18 +27,95 @@ jobs:
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@main
 
-      - name: Install cargo tools
-        uses: taiki-e/install-action@v2
+      - name: Install mise
+        uses: jdx/mise-action@v3
         with:
-          tool: cargo-deny,cargo-nextest
+          install: false
+
+      - name: Check formatting
+        run: mise run format
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
 
       - name: Install mise
         uses: jdx/mise-action@v3
         with:
           install: false
 
-      - name: Run release validation
-        run: mise run ci
+      - name: Check clippy
+        run: mise run clippy
+
+  deny:
+    name: Deny
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      - name: Install mise
+        uses: jdx/mise-action@v3
+        with:
+          install: false
+
+      - name: Run cargo deny
+        run: mise run deny:check
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: Install mise
+        uses: jdx/mise-action@v3
+        with:
+          install: false
+
+      - name: Run test suite
+        run: mise run test
 
   msrv:
     name: MSRV (1.88)
@@ -67,3 +144,19 @@ jobs:
         run: |
           mise run build
           mise run test:cargo
+
+  ci-complete:
+    name: CI Complete
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs:
+      - fmt
+      - clippy
+      - deny
+      - tests
+      - msrv
+
+    steps:
+      - name: CI passed
+        run: true
