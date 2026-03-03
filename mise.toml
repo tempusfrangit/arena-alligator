@@ -67,11 +67,15 @@ run = 'cargo test'
 [tasks."deny:check"]
 description = "Run `cargo deny check`"
 run = '''
-mkdir -p .cargo
-if [ ! -d .cargo/advisory-dbs ] && [ -d "$HOME/.cargo/advisory-dbs" ]; then
-  cp -R "$HOME/.cargo/advisory-dbs" .cargo/advisory-dbs
+if [ -n "${CI:-}" ]; then
+  cargo deny check
+else
+  mkdir -p .cargo
+  if [ ! -d .cargo/advisory-dbs ] && [ -d "$HOME/.cargo/advisory-dbs" ]; then
+    cp -R "$HOME/.cargo/advisory-dbs" .cargo/advisory-dbs
+  fi
+  CARGO_HOME="$PWD/.cargo" cargo deny check --disable-fetch
 fi
-CARGO_HOME="$PWD/.cargo" cargo deny check --disable-fetch
 '''
 
 [tasks.build]

@@ -226,12 +226,11 @@ unsafe impl BufMut for Buffer {
     }
 
     fn chunk_mut(&mut self) -> &mut UninitSlice {
-        if self.spilled.is_some() {
-            return self.spilled.as_mut().unwrap().chunk_mut();
-        }
-        if self.auto_spill && self.len >= self.capacity {
+        if self.spilled.is_none() && self.auto_spill && self.len >= self.capacity {
             self.do_spill();
-            return self.spilled.as_mut().unwrap().chunk_mut();
+        }
+        if let Some(buf) = &mut self.spilled {
+            return buf.chunk_mut();
         }
         // SAFETY: ptr + offset + len is within the slot's allocated region.
         let ptr = unsafe { self.ptr.add(self.offset + self.len) };
