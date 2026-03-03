@@ -6,7 +6,11 @@
 
 # Documentation
 !/docs/
+!/docs/assets/
+!/docs/assets/**/
 !/docs/**/*.md
+!/docs/**/*.jpg
+!/docs/**/*.png
 !README.md
 !/LICENSE
 
@@ -23,6 +27,9 @@
 !/benches/
 !/benches/**/
 !/benches/**/*.rs
+!/examples/
+!/examples/**/
+!/examples/**/*.rs
 
 # Tooling
 !/.github/

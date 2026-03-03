@@ -22,3 +22,7 @@ async-alloc = ["dep:tokio"]
 [[bench]]
 name = "allocator"
 harness = false
+
+[[example]]
+name = "async_alloc"
+required-features = ["async-alloc"]
