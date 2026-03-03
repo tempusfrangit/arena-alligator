@@ -226,8 +226,8 @@ unsafe impl BufMut for Buffer {
     }
 
     fn chunk_mut(&mut self) -> &mut UninitSlice {
-        if self.spilled.is_some() {
-            return self.spilled.as_mut().unwrap().chunk_mut();
+        if let Some(buf) = &mut self.spilled {
+            return buf.chunk_mut();
         }
         if self.auto_spill && self.len >= self.capacity {
             self.do_spill();
