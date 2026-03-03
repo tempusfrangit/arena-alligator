@@ -70,7 +70,7 @@ With the `async-alloc` feature, both arena types support `allocate_async()`. The
 
 ```toml
 [dependencies]
-arena-alligator = { version = "0.1", features = ["async-alloc"] }
+arena-alligator = { version = "0.3", features = ["async-alloc"] }
 ```
 
 ```rust,ignore

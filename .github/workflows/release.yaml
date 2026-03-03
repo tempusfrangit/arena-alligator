@@ -1,0 +1,57 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: Install cargo tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-nextest
+
+      - name: Install mise
+        uses: jdx/mise-action@v3
+        with:
+          install: false
+
+      - name: Validate release inputs
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "$(cargo pkgid | sed 's/.*#//')"
+
+      - name: Run release validation
+        run: mise run ci
+
+      - name: Verify publish payload
+        run: mise run publish:check
+
+      - name: Authenticate with crates.io
+        uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Publish crate
+        run: cargo publish --token "${{ steps.auth.outputs.token }}"

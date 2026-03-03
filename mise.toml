@@ -27,7 +27,7 @@ run = [
 
 [tasks.clippy]
 description = "Clippy linting"
-run = 'cargo clippy -- -D warnings'
+run = 'cargo clippy --all-targets --all-features -- -D warnings'
 
 [tasks."clippy:fix"]
 description = "Clippy in 'fix' mode"
@@ -39,6 +39,17 @@ run = [
     { task = "test:nextest" },
     { task = "test:all-features" },
 ]
+
+[tasks.ci]
+description = "Run the release CI validation suite"
+run = [
+    { task = "lint" },
+    { task = "test" },
+]
+
+[tasks."publish:check"]
+description = "Verify the crate is ready to publish"
+run = 'cargo package --locked --allow-dirty --offline'
 
 [tasks."test:nextest"]
 description = "Run tests with nextest"
@@ -55,7 +66,13 @@ run = 'cargo test'
 
 [tasks."deny:check"]
 description = "Run `cargo deny check`"
-run = 'cargo deny check'
+run = '''
+mkdir -p .cargo
+if [ ! -d .cargo/advisory-dbs ] && [ -d "$HOME/.cargo/advisory-dbs" ]; then
+  cp -R "$HOME/.cargo/advisory-dbs" .cargo/advisory-dbs
+fi
+CARGO_HOME="$PWD/.cargo" cargo deny check --disable-fetch
+'''
 
 [tasks.build]
 description = "Build arena alligator"
