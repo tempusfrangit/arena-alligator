@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/logo.png" alt="Arena Alligator" width="520">
+  <img src="docs/assets/logo.svg" alt="Arena Alligator" width="520">
 </p>
 
 Lock-free arena allocator that produces `bytes::Bytes` via zero-copy freeze.

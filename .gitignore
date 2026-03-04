@@ -9,6 +9,7 @@
 !/docs/assets/
 !/docs/assets/**/
 !/docs/**/*.md
+!/docs/**/*.svg
 !/docs/**/*.jpg
 !/docs/**/*.png
 !README.md
