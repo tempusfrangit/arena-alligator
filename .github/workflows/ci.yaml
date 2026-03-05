@@ -65,6 +65,19 @@ jobs:
       - run: cargo nextest run
       - run: cargo test --all-features
 
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo +nightly miri test --all-features
+
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
@@ -87,6 +100,7 @@ jobs:
       - clippy
       - deny
       - tests
+      - miri
       - msrv
     steps:
       - name: Check job results
@@ -96,6 +110,7 @@ jobs:
             "${{ needs.clippy.result }}"
             "${{ needs.deny.result }}"
             "${{ needs.tests.result }}"
+            "${{ needs.miri.result }}"
             "${{ needs.msrv.result }}"
           )
           for r in "${results[@]}"; do
