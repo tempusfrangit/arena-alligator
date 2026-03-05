@@ -1,6 +1,5 @@
 use std::fmt;
 use std::mem::ManuallyDrop;
-use std::sync::Arc;
 
 use bytes::buf::UninitSlice;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -10,6 +9,7 @@ use crate::arena::ArenaInner;
 use crate::buddy::BuddyArenaInner;
 use crate::error::BufferFullError;
 use crate::handle::BufferHandle;
+use crate::sync::Arc;
 
 /// A writable buffer backed by arena memory.
 ///

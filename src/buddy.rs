@@ -1,13 +1,13 @@
 use std::alloc::Layout;
 use std::fmt;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::bitmap::AtomicBitmap;
 use crate::buffer::Buffer;
 use crate::error::{AllocError, BuildError};
 use crate::metrics::{BuddyArenaMetrics, MetricsState};
+use crate::sync::Arc;
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct BuddyArenaInner {
@@ -126,9 +126,7 @@ impl BuddyArena {
 
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn nonempty_orders(&self) -> usize {
-        self.inner
-            .nonempty_orders
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.inner.nonempty_orders.load(Ordering::Relaxed)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -316,10 +314,10 @@ impl BuddyArenaBuilder {
     where
         W: crate::async_alloc::Waiter,
     {
-        let waiters = Arc::new(waiters);
-        let inner = self.build_inner(Some(crate::async_alloc::WakeHandle::new(Arc::clone(
-            &waiters,
-        ))))?;
+        let waiters = std::sync::Arc::new(waiters);
+        let inner = self.build_inner(Some(crate::async_alloc::WakeHandle::new(
+            std::sync::Arc::clone(&waiters),
+        )))?;
 
         Ok(crate::async_alloc::AsyncBuddyArena::new(
             BuddyArena {

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
 /// Snapshot of fixed arena metrics.
 #[non_exhaustive]
@@ -45,13 +45,13 @@ pub struct BuddyArenaMetrics {
 }
 
 pub(crate) struct MetricsState {
-    allocations_ok: AtomicU64,
-    allocations_failed: AtomicU64,
-    frees: AtomicU64,
-    frozen: AtomicU64,
-    spills: AtomicU64,
-    splits: AtomicU64,
-    coalesces: AtomicU64,
+    allocations_ok: AtomicUsize,
+    allocations_failed: AtomicUsize,
+    frees: AtomicUsize,
+    frozen: AtomicUsize,
+    spills: AtomicUsize,
+    splits: AtomicUsize,
+    coalesces: AtomicUsize,
     bytes_reserved: usize,
     bytes_live: AtomicUsize,
 }
@@ -59,13 +59,13 @@ pub(crate) struct MetricsState {
 impl MetricsState {
     pub(crate) fn new(bytes_reserved: usize) -> Self {
         Self {
-            allocations_ok: AtomicU64::new(0),
-            allocations_failed: AtomicU64::new(0),
-            frees: AtomicU64::new(0),
-            frozen: AtomicU64::new(0),
-            spills: AtomicU64::new(0),
-            splits: AtomicU64::new(0),
-            coalesces: AtomicU64::new(0),
+            allocations_ok: AtomicUsize::new(0),
+            allocations_failed: AtomicUsize::new(0),
+            frees: AtomicUsize::new(0),
+            frozen: AtomicUsize::new(0),
+            spills: AtomicUsize::new(0),
+            splits: AtomicUsize::new(0),
+            coalesces: AtomicUsize::new(0),
             bytes_reserved,
             bytes_live: AtomicUsize::new(0),
         }
@@ -94,7 +94,7 @@ impl MetricsState {
     }
 
     pub(crate) fn record_splits(&self, count: u64) {
-        self.splits.fetch_add(count, Ordering::Relaxed);
+        self.splits.fetch_add(count as usize, Ordering::Relaxed);
     }
 
     pub(crate) fn record_coalesce(&self) {
@@ -103,11 +103,11 @@ impl MetricsState {
 
     pub(crate) fn fixed_snapshot(&self) -> FixedArenaMetrics {
         FixedArenaMetrics {
-            allocations_ok: self.allocations_ok.load(Ordering::Relaxed),
-            allocations_failed: self.allocations_failed.load(Ordering::Relaxed),
-            frees: self.frees.load(Ordering::Relaxed),
-            frozen: self.frozen.load(Ordering::Relaxed),
-            spills: self.spills.load(Ordering::Relaxed),
+            allocations_ok: self.allocations_ok.load(Ordering::Relaxed) as u64,
+            allocations_failed: self.allocations_failed.load(Ordering::Relaxed) as u64,
+            frees: self.frees.load(Ordering::Relaxed) as u64,
+            frozen: self.frozen.load(Ordering::Relaxed) as u64,
+            spills: self.spills.load(Ordering::Relaxed) as u64,
             bytes_reserved: self.bytes_reserved,
             bytes_live: self.bytes_live.load(Ordering::Relaxed),
         }
@@ -115,15 +115,15 @@ impl MetricsState {
 
     pub(crate) fn buddy_snapshot(&self, largest_free_block: usize) -> BuddyArenaMetrics {
         BuddyArenaMetrics {
-            allocations_ok: self.allocations_ok.load(Ordering::Relaxed),
-            allocations_failed: self.allocations_failed.load(Ordering::Relaxed),
-            frees: self.frees.load(Ordering::Relaxed),
-            frozen: self.frozen.load(Ordering::Relaxed),
-            spills: self.spills.load(Ordering::Relaxed),
+            allocations_ok: self.allocations_ok.load(Ordering::Relaxed) as u64,
+            allocations_failed: self.allocations_failed.load(Ordering::Relaxed) as u64,
+            frees: self.frees.load(Ordering::Relaxed) as u64,
+            frozen: self.frozen.load(Ordering::Relaxed) as u64,
+            spills: self.spills.load(Ordering::Relaxed) as u64,
             bytes_reserved: self.bytes_reserved,
             bytes_live: self.bytes_live.load(Ordering::Relaxed),
-            splits: self.splits.load(Ordering::Relaxed),
-            coalesces: self.coalesces.load(Ordering::Relaxed),
+            splits: self.splits.load(Ordering::Relaxed) as u64,
+            coalesces: self.coalesces.load(Ordering::Relaxed) as u64,
             largest_free_block,
         }
     }
