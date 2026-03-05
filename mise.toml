@@ -1,71 +1,152 @@
-[tools]
-"cargo-binstall" = "latest"
-"cargo:cargo-nextest" = "latest"
-"cargo:cargo-deny" = "latest"
+# =============================================================================
+# arena-alligator development tasks
+# =============================================================================
+#
+# mise is a task runner only. Tools are managed externally:
+#   - Rust toolchain: rust-toolchain.toml (rustup)
+#   - cargo-nextest: cargo binstall cargo-nextest
+#   - cargo-deny: cargo binstall cargo-deny
+#
+# Run `mise tasks` to see available tasks.
+# Run `mise run doctor` to check all tools are installed.
+# =============================================================================
 
-[settings]
-experimental = true
-lockfile = true
+# -----------------------------------------------------------------------------
+# Doctor tasks - verify tools are installed
+# -----------------------------------------------------------------------------
+
+[tasks."_doctor:base"]
+hide = true
+quiet = true
+run = '''
+#!/usr/bin/env bash
+err=0
+command -v cargo >/dev/null || { echo "error: cargo not found. Install: https://rustup.rs"; err=1; }
+command -v rustfmt >/dev/null || { echo "error: rustfmt not found. Install: rustup component add rustfmt"; err=1; }
+cargo clippy --version >/dev/null 2>&1 || { echo "error: clippy not found. Install: rustup component add clippy"; err=1; }
+exit $err
+'''
+
+[tasks."_doctor:nextest"]
+hide = true
+quiet = true
+run = '''
+#!/usr/bin/env bash
+command -v cargo-nextest >/dev/null || { echo "error: cargo-nextest not found. Install: cargo binstall cargo-nextest"; exit 1; }
+'''
+
+[tasks."_doctor:deny"]
+hide = true
+quiet = true
+run = '''
+#!/usr/bin/env bash
+command -v cargo-deny >/dev/null || { echo "error: cargo-deny not found. Install: cargo binstall cargo-deny"; exit 1; }
+'''
+
+[tasks.doctor]
+description = "Check that all development tools are installed"
+run = [
+    { tasks = ["_doctor:base", "_doctor:nextest", "_doctor:deny"] },
+]
+
+# -----------------------------------------------------------------------------
+# Format
+# -----------------------------------------------------------------------------
 
 [tasks.format]
-description = "Checks formatting via `cargo fmt --check`"
+description = "Check formatting via cargo fmt --check"
+depends = ["_doctor:base"]
 run = 'cargo fmt --check'
 
 [tasks."format:fix"]
-description = "Fixes formatting via `cargo fmt`"
+description = "Fix formatting via cargo fmt"
+depends = ["_doctor:base"]
 run = 'cargo fmt'
 
+# -----------------------------------------------------------------------------
+# Lint
+# -----------------------------------------------------------------------------
+
 [tasks.lint]
-description = "Runs linting tasks"
+description = "Run all linting tasks"
+depends = ["_doctor:base"]
 run = [
-    { tasks = [
-        "clippy",
-        "format",
-        "deny:check",
-    ] },
+    { tasks = ["clippy", "format", "deny:check"] },
 ]
 
 [tasks.clippy]
-description = "Clippy linting"
+description = "Run clippy with warnings as errors"
+depends = ["_doctor:base"]
 run = 'cargo clippy --all-targets --all-features -- -D warnings'
 
 [tasks."clippy:fix"]
-description = "Clippy in 'fix' mode"
+description = "Run clippy in fix mode"
+depends = ["_doctor:base"]
 run = 'cargo clippy --fix'
 
+# -----------------------------------------------------------------------------
+# Test
+# -----------------------------------------------------------------------------
+
 [tasks.test]
-description = "Run tests"
+description = "Run full test suite"
+depends = ["_doctor:base", "_doctor:nextest"]
 run = [
     { task = "test:nextest" },
     { task = "test:all-features" },
 ]
 
-[tasks.ci]
-description = "Run the release CI validation suite"
-run = [
-    { task = "lint" },
-    { task = "test" },
-]
-
-[tasks."publish:check"]
-description = "Verify the crate is ready to publish"
-run = 'cargo package --locked --allow-dirty --offline'
-
 [tasks."test:nextest"]
 description = "Run tests with nextest"
+depends = ["_doctor:base", "_doctor:nextest"]
 run = 'cargo nextest run'
 
 [tasks."test:all-features"]
 description = "Run tests with all features enabled"
+depends = ["_doctor:base"]
 run = 'cargo test --all-features'
 
 [tasks."test:cargo"]
-description = "Run tests with `cargo test`"
+description = "Run tests with cargo test"
+depends = ["_doctor:base"]
 hide = true
 run = 'cargo test'
 
+# -----------------------------------------------------------------------------
+# Specialized test runners
+# -----------------------------------------------------------------------------
+
+[tasks.miri]
+description = "Run miri undefined-behavior checks"
+depends = ["_doctor:base"]
+run = 'cargo +nightly miri test --all-features'
+
+[tasks.loom]
+description = "Run loom concurrency model checks"
+depends = ["_doctor:base"]
+run = 'RUSTFLAGS="--cfg loom" cargo test --lib --features async-alloc loom -- --nocapture'
+
+# -----------------------------------------------------------------------------
+# Build & bench
+# -----------------------------------------------------------------------------
+
+[tasks.build]
+description = "Build the library"
+depends = ["_doctor:base"]
+run = 'cargo build'
+
+[tasks.bench]
+description = "Run allocator benchmarks"
+depends = ["_doctor:base"]
+run = 'cargo bench --bench allocator'
+
+# -----------------------------------------------------------------------------
+# Deny
+# -----------------------------------------------------------------------------
+
 [tasks."deny:check"]
-description = "Run `cargo deny check`"
+description = "Run cargo deny license and advisory checks"
+depends = ["_doctor:deny"]
 run = '''
 if [ -n "${CI:-}" ]; then
   cargo deny check
@@ -78,10 +159,18 @@ else
 fi
 '''
 
-[tasks.build]
-description = "Build arena alligator"
-run = 'cargo build'
+# -----------------------------------------------------------------------------
+# CI & publish
+# -----------------------------------------------------------------------------
 
-[tasks.bench]
-description = "Run allocator benchmarks"
-run = 'cargo bench --bench allocator'
+[tasks.ci]
+description = "Run the full CI validation suite locally"
+run = [
+    { task = "lint" },
+    { task = "test" },
+]
+
+[tasks."publish:check"]
+description = "Verify the crate is ready to publish"
+depends = ["_doctor:base"]
+run = 'cargo package --locked --allow-dirty --offline'
