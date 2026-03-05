@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use crate::arena::ArenaInner;
 use crate::buddy::BuddyArenaInner;
+use crate::sync::Arc;
 
 pub(crate) enum ArenaRef {
     Fixed(Arc<ArenaInner>),

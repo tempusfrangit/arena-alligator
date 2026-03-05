@@ -4,12 +4,12 @@ use std::ops::Deref;
 use std::pin::Pin;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use std::task::{Context, Poll};
 
 use tokio::sync::futures::OwnedNotified;
 
 use crate::buffer::Buffer;
+use crate::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 use crate::{BuddyArena, FixedArena};
 
 /// Policy for how `allocate_async` waits when the arena is full.
@@ -195,7 +195,7 @@ impl TreiberStack {
 
 impl Drop for TreiberStack {
     fn drop(&mut self) {
-        let mut current = *self.head.get_mut();
+        let mut current = self.head.swap(ptr::null_mut(), Ordering::AcqRel);
         while !current.is_null() {
             // SAFETY: each node was pushed via Arc::into_raw
             let node = unsafe { Arc::from_raw(current as *const WaiterNode) };
@@ -860,5 +860,122 @@ mod tests {
         assert_eq!(cap, 2048);
         assert!(waiters.registrations() >= 1);
         assert!(waiters.wakes() >= 1);
+    }
+}
+
+#[cfg(all(test, loom, feature = "async-alloc"))]
+mod loom_tests {
+    use std::ptr;
+
+    use loom::thread;
+
+    use super::*;
+
+    fn new_node(revoked: bool) -> Arc<WaiterNode> {
+        Arc::new(WaiterNode {
+            next: AtomicPtr::new(ptr::null_mut()),
+            notify: Arc::new(tokio::sync::Notify::new()),
+            revoked: AtomicBool::new(revoked),
+        })
+    }
+
+    #[test]
+    fn loom_treiber_push_and_wake_drains_stack() {
+        loom::model(|| {
+            let stack = Arc::new(TreiberStack::new());
+
+            let s1 = Arc::clone(&stack);
+            let t1 = thread::spawn(move || {
+                let node = new_node(false);
+                s1.push(Arc::into_raw(node));
+            });
+
+            let s2 = Arc::clone(&stack);
+            let t2 = thread::spawn(move || {
+                let node = new_node(false);
+                s2.push(Arc::into_raw(node));
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            stack.wake_one();
+            stack.wake_one();
+
+            assert!(stack.head.load(Ordering::Acquire).is_null());
+        });
+    }
+
+    #[test]
+    fn loom_treiber_skips_revoked_waiters() {
+        loom::model(|| {
+            let stack = TreiberStack::new();
+
+            let live = new_node(false);
+            let revoked = new_node(true);
+
+            stack.push(Arc::into_raw(live));
+            stack.push(Arc::into_raw(revoked));
+
+            stack.wake_one();
+
+            assert!(stack.head.load(Ordering::Acquire).is_null());
+        });
+    }
+
+    #[test]
+    fn loom_treiber_revoke_race_is_safe() {
+        loom::model(|| {
+            let stack = Arc::new(TreiberStack::new());
+            let node = new_node(false);
+
+            let stack_for_push = Arc::clone(&stack);
+            let node_for_push = Arc::clone(&node);
+            let t_push = thread::spawn(move || {
+                stack_for_push.push(Arc::into_raw(node_for_push));
+            });
+
+            let node_for_revoke = Arc::clone(&node);
+            let t_revoke = thread::spawn(move || {
+                node_for_revoke.revoked.store(true, Ordering::Release);
+            });
+
+            t_push.join().unwrap();
+            t_revoke.join().unwrap();
+
+            stack.wake_one();
+
+            assert!(stack.head.load(Ordering::Acquire).is_null());
+        });
+    }
+
+    /// Push and wake racing concurrently. The pushed node must
+    /// either be woken or remain in the stack for drop cleanup.
+    #[test]
+    fn loom_treiber_concurrent_push_and_wake() {
+        loom::model(|| {
+            let stack = Arc::new(TreiberStack::new());
+
+            // Seed one node so wake_one has something to pop.
+            let seed = new_node(false);
+            stack.push(Arc::into_raw(seed));
+
+            let s1 = Arc::clone(&stack);
+            let t_push = thread::spawn(move || {
+                let node = new_node(false);
+                s1.push(Arc::into_raw(node));
+            });
+
+            let s2 = Arc::clone(&stack);
+            let t_wake = thread::spawn(move || {
+                s2.wake_one();
+            });
+
+            t_push.join().unwrap();
+            t_wake.join().unwrap();
+
+            // Drain whatever remains — no leaks, no double-frees.
+            stack.wake_one();
+        });
     }
 }

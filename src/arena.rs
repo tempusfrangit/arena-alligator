@@ -1,12 +1,12 @@
 use std::alloc::Layout;
 use std::fmt;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 
 use crate::bitmap::AtomicBitmap;
 use crate::buffer::Buffer;
 use crate::error::{AllocError, BuildError};
 use crate::metrics::{FixedArenaMetrics, MetricsState};
+use crate::sync::Arc;
 
 pub(crate) struct ArenaInner {
     pub(crate) ptr: *mut u8,
@@ -223,7 +223,7 @@ impl FixedArenaBuilder {
             std::alloc::handle_alloc_error(layout);
         }
 
-        let waiters = Arc::new(waiters);
+        let waiters = std::sync::Arc::new(waiters);
 
         let inner = ArenaInner {
             ptr,
@@ -233,7 +233,9 @@ impl FixedArenaBuilder {
             bitmap: AtomicBitmap::new(slot_count),
             auto_spill: self.auto_spill,
             metrics: MetricsState::new(total_size),
-            wake_handle: Some(crate::async_alloc::WakeHandle::new(Arc::clone(&waiters))),
+            wake_handle: Some(crate::async_alloc::WakeHandle::new(std::sync::Arc::clone(
+                &waiters,
+            ))),
         };
 
         Ok(crate::async_alloc::AsyncFixedArena::new(

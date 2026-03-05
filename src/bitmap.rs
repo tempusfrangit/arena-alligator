@@ -1,15 +1,7 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicUsize, Ordering};
 
-// Compile-time word width selection: AtomicU64 on 64-bit targets, AtomicU32 on 32-bit.
-#[cfg(target_has_atomic = "64")]
-type AtomicWord = std::sync::atomic::AtomicU64;
-#[cfg(target_has_atomic = "64")]
-type Word = u64;
-
-#[cfg(not(target_has_atomic = "64"))]
-type AtomicWord = std::sync::atomic::AtomicU32;
-#[cfg(not(target_has_atomic = "64"))]
-type Word = u32;
+type AtomicWord = AtomicUsize;
+type Word = usize;
 
 const BITS_PER_WORD: usize = std::mem::size_of::<Word>() * 8;
 
@@ -406,5 +398,197 @@ mod tests {
             count += 1;
         }
         assert_eq!(count, 7168);
+    }
+}
+
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use crate::sync::Arc;
+    use crate::sync::atomic::{AtomicUsize, Ordering};
+    use loom::thread;
+
+    use super::AtomicBitmap;
+
+    #[test]
+    fn loom_alloc_free_race() {
+        loom::model(|| {
+            let bitmap = Arc::new(AtomicBitmap::new(1));
+
+            let a = Arc::clone(&bitmap);
+            let b = Arc::clone(&bitmap);
+
+            let t1 = thread::spawn(move || {
+                if let Some(slot) = a.try_alloc() {
+                    a.free(slot);
+                }
+            });
+
+            let t2 = thread::spawn(move || {
+                if let Some(slot) = b.try_alloc() {
+                    b.free(slot);
+                }
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            assert_eq!(bitmap.free_count(), 1);
+            assert!(bitmap.any_free());
+        });
+    }
+
+    #[test]
+    fn loom_single_slot_has_at_most_one_winner() {
+        loom::model(|| {
+            let bitmap = Arc::new(AtomicBitmap::new(1));
+            let winners = Arc::new(AtomicUsize::new(0));
+
+            let b1 = Arc::clone(&bitmap);
+            let w1 = Arc::clone(&winners);
+            let t1 = thread::spawn(move || {
+                if b1.try_alloc().is_some() {
+                    w1.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+            let b2 = Arc::clone(&bitmap);
+            let w2 = Arc::clone(&winners);
+            let t2 = thread::spawn(move || {
+                if b2.try_alloc().is_some() {
+                    w2.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            assert!(winners.load(Ordering::Relaxed) <= 1);
+        });
+    }
+
+    #[test]
+    fn loom_two_slot_allocation_counts_never_exceed_capacity() {
+        let mut builder = loom::model::Builder::new();
+        builder.preemption_bound = Some(2);
+        builder.check(|| {
+            let bitmap = Arc::new(AtomicBitmap::new(2));
+            let winners = Arc::new(AtomicUsize::new(0));
+
+            let mut handles = Vec::new();
+            for _ in 0..3 {
+                let bm = Arc::clone(&bitmap);
+                let w = Arc::clone(&winners);
+                handles.push(thread::spawn(move || {
+                    if bm.try_alloc().is_some() {
+                        w.fetch_add(1, Ordering::Relaxed);
+                    }
+                }));
+            }
+
+            for handle in handles {
+                handle.join().unwrap();
+            }
+
+            assert!(winners.load(Ordering::Relaxed) <= 2);
+        });
+    }
+
+    /// try_claim_exact racing with try_alloc on the same slot.
+    /// Models the buddy coalesce path where one thread reclaims a
+    /// buddy block while another thread tries to allocate it.
+    #[test]
+    fn loom_try_claim_exact_vs_try_alloc() {
+        loom::model(|| {
+            let bitmap = Arc::new(AtomicBitmap::new(2));
+
+            let a = Arc::clone(&bitmap);
+            let b = Arc::clone(&bitmap);
+
+            // Thread A: try_alloc (scans for any free bit)
+            let t1 = thread::spawn(move || a.try_alloc());
+
+            // Thread B: try_claim_exact on slot 0 (buddy coalesce path)
+            let t2 = thread::spawn(move || b.try_claim_exact(0));
+
+            let alloc_result = t1.join().unwrap();
+            let claim_result = t2.join().unwrap();
+
+            // At most one thread wins slot 0.
+            // If claim won slot 0, alloc may get slot 1 or None.
+            // If alloc won slot 0, claim fails and alloc got slot 0.
+            match (alloc_result, claim_result) {
+                (Some(0), true) => panic!("both won slot 0"),
+                _ => {}
+            }
+
+            // Exactly 2 minus however many were taken should remain free.
+            let taken = usize::from(alloc_result.is_some()) + usize::from(claim_result);
+            assert_eq!(bitmap.free_count(), 2 - taken);
+        });
+    }
+
+    /// try_claim_exact racing with free on the same slot.
+    /// Models concurrent coalesce (claim buddy) while another thread
+    /// returns the same block.
+    #[test]
+    fn loom_try_claim_exact_vs_free() {
+        loom::model(|| {
+            let bitmap = Arc::new(AtomicBitmap::new(2));
+
+            // Pre-allocate slot 0 so we can free it.
+            let slot = bitmap.try_alloc().unwrap();
+            assert_eq!(slot, 0);
+
+            let a = Arc::clone(&bitmap);
+            let b = Arc::clone(&bitmap);
+
+            // Thread A: free slot 0 (sets bit)
+            let t1 = thread::spawn(move || a.free(0));
+
+            // Thread B: try_claim_exact slot 0 (clears bit)
+            let t2 = thread::spawn(move || b.try_claim_exact(0));
+
+            t1.join().unwrap();
+            let claimed = t2.join().unwrap();
+
+            if claimed {
+                // claim won: slot 0 was freed then immediately reclaimed,
+                // so it should be allocated (bit clear).
+                assert!(!bitmap.is_free(0));
+            } else {
+                // claim lost the race: free hadn't happened yet,
+                // but free completed so slot 0 is now free.
+                assert!(bitmap.is_free(0));
+            }
+        });
+    }
+
+    /// Two threads doing alloc-free cycles on a 2-slot bitmap.
+    /// Verifies no slots are lost after concurrent recycling.
+    #[test]
+    fn loom_alloc_free_recycle() {
+        loom::model(|| {
+            let bitmap = Arc::new(AtomicBitmap::new(2));
+
+            let a = Arc::clone(&bitmap);
+            let b = Arc::clone(&bitmap);
+
+            let t1 = thread::spawn(move || {
+                if let Some(s) = a.try_alloc() {
+                    a.free(s);
+                }
+            });
+
+            let t2 = thread::spawn(move || {
+                if let Some(s) = b.try_alloc() {
+                    b.free(s);
+                }
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            assert_eq!(bitmap.free_count(), 2);
+        });
     }
 }

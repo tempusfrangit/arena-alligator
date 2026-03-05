@@ -59,6 +59,7 @@ mod buffer;
 mod error;
 mod handle;
 mod metrics;
+mod sync;
 
 #[cfg(feature = "async-alloc")]
 mod async_alloc;
