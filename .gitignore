@@ -42,7 +42,9 @@
 
 # mise
 !mise.toml
-!mise.lock
+
+# Rust toolchain
+!/rust-toolchain.toml
 
 # Deny List (Ignore these files even if a parent directory is allowed)
 #/ ignore top-level target
