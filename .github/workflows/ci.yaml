@@ -2,161 +2,106 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+
 jobs:
   fmt:
-    name: Fmt
+    name: Format
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install mise
-        uses: jdx/mise-action@v3
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          install: false
-
-      - name: Check formatting
-        run: mise run format
+          components: rustfmt
+      - run: cargo fmt --check
 
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install mise
-        uses: jdx/mise-action@v3
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          install: false
-
-      - name: Check clippy
-        run: mise run clippy
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo clippy --all-targets --all-features -- -D warnings
 
   deny:
     name: Deny
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@v2
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
-
-      - name: Install mise
-        uses: jdx/mise-action@v3
-        with:
-          install: false
-
-      - name: Run cargo deny
-        run: mise run deny:check
+          tool: cargo-deny@0.19.0
+      - run: cargo deny check
 
   tests:
     name: Tests
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@v2
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest
-
-      - name: Install mise
-        uses: jdx/mise-action@v3
+          tool: cargo-nextest@0.9.124
+      - uses: Swatinem/rust-cache@v2
         with:
-          install: false
-
-      - name: Run test suite
-        run: mise run test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo nextest run
+      - run: cargo test --all-features
 
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust 1.88
-        uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.88.0
-
-      - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@main
-
-      - name: Install mise
-        uses: jdx/mise-action@v3
+      - uses: Swatinem/rust-cache@v2
         with:
-          install: false
-
-      - name: Build and test on MSRV
-        run: |
-          mise run build
-          mise run test:cargo
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo test --all-features
 
   ci-complete:
     name: CI Complete
+    if: always()
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     needs:
       - fmt
       - clippy
       - deny
       - tests
       - msrv
-
     steps:
-      - name: CI passed
-        run: true
+      - name: Check job results
+        run: |
+          results=(
+            "${{ needs.fmt.result }}"
+            "${{ needs.clippy.result }}"
+            "${{ needs.deny.result }}"
+            "${{ needs.tests.result }}"
+            "${{ needs.msrv.result }}"
+          )
+          for r in "${results[@]}"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::CI failed: $r"
+              exit 1
+            fi
+          done
+          echo "All CI checks passed"
