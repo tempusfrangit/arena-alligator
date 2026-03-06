@@ -41,7 +41,12 @@ jobs:
 
       - name: Validate release inputs
         run: |
-          test "${GITHUB_REF_NAME#v}" = "$(cargo pkgid | sed 's/.*#//')"
+          expected="${GITHUB_REF_NAME#v}"
+          actual="$(cargo pkgid | sed -E 's/.*[@#]//')"
+          test "${expected}" = "${actual}" || {
+            echo "Tag version (${expected}) does not match crate version (${actual})"
+            exit 1
+          }
 
       - name: Run release validation
         run: mise run ci
