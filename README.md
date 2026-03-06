@@ -70,19 +70,40 @@ With the `async-alloc` feature, both arena types support `allocate_async()`. The
 
 ```toml
 [dependencies]
-arena-alligator = { version = "0.3", features = ["async-alloc"] }
+arena-alligator = { version = "0.4", features = ["async-alloc"] }
 ```
 
 ```rust,ignore
-let arena = FixedArena::builder(nz(1024), nz(4096))
-    .build_async(AsyncPolicy::Notify)?;
+let arena = Arc::new(
+    FixedArena::builder(nz(2), nz(256))
+        .build_async()
+        .unwrap(),
+);
 
 let buf = arena.allocate_async().await;
 ```
 
 ## Metrics
 
-Both arena types expose a `metrics()` snapshot. Fixed reports allocation, failure, spill, and live-capacity counters. Buddy adds split, coalesce, and largest-free-block data.
+Use `metrics()` on `FixedArena` and `BuddyArena` to snapshot allocator state. Fixed reports allocation, failure, spill, and live-capacity counters. Buddy adds split, coalesce, and largest-free-block data.
+
+In load tests, watch `spill_count` and `largest_free_block` over time to catch pressure and fragmentation early.
+
+## Examples
+
+If you're new to the crate, run `fixed_buffer` first, then `buddy_buffer` for variable-size behavior.
+
+| Example | What it shows |
+| ------- | ------------- |
+| [`fixed_buffer`](examples/fixed_buffer.rs) | Allocate, write, freeze, and send across threads |
+| [`buddy_buffer`](examples/buddy_buffer.rs) | Variable-size allocations with split and coalesce |
+| [`spill_buffer`](examples/spill_buffer.rs) | Auto-spill to heap when a buffer outgrows slot capacity |
+| [`async_alloc`](examples/async_alloc.rs) | Wait for capacity with `allocate_async()` |
+
+```sh
+cargo run --example fixed_buffer
+cargo run --example async_alloc --features async-alloc
+```
 
 ## Status
 
