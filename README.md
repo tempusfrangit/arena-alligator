@@ -128,7 +128,7 @@ Override via `ARENA_BENCH_EXTREME_THREADS=<n>`.
 
 ## Status
 
-Pre-1.0. The crate is usable now, but the API may still move before it settles.
+Pre-1.0. The crate is usable and the API is not expected to change/break. If the API does require a breaking change, an adapter will be implemented.
 
 ## Contributing
 
