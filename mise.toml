@@ -140,6 +140,11 @@ description = "Run allocator benchmarks"
 depends = ["_doctor:base"]
 run = 'cargo bench --bench allocator'
 
+[tasks."bench:extreme"]
+description = "Run allocator benchmarks with EXTREME contention thread level enabled"
+depends = ["_doctor:base"]
+run = 'ARENA_BENCH_EXTREME=1 cargo bench --bench allocator'
+
 # -----------------------------------------------------------------------------
 # Deny
 # -----------------------------------------------------------------------------
