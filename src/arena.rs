@@ -173,23 +173,9 @@ impl FixedArenaBuilder {
 
 #[cfg(feature = "async-alloc")]
 impl FixedArenaBuilder {
-    /// Build an async-capable arena with the given wait policy.
-    pub fn build_async(
-        self,
-        policy: crate::async_alloc::AsyncPolicy,
-    ) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
-        let waiters = match policy {
-            crate::async_alloc::AsyncPolicy::Notify => {
-                crate::async_alloc::BuiltInWaiters::Notify(crate::async_alloc::NotifyWaiters::new())
-            }
-            crate::async_alloc::AsyncPolicy::TreiberWaiters => {
-                crate::async_alloc::BuiltInWaiters::Treiber(
-                    crate::async_alloc::TreiberWaiters::new(),
-                )
-            }
-        };
-
-        self.build_async_with(waiters)
+    /// Build an async-capable arena using the default notify-based waiter.
+    pub fn build_async(self) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(1))
     }
 
     /// Build an async-capable arena with a custom waiter policy.

@@ -72,6 +72,5 @@ pub use metrics::{BuddyArenaMetrics, FixedArenaMetrics};
 
 #[cfg(feature = "async-alloc")]
 pub use async_alloc::{
-    AsyncBuddyArena, AsyncFixedArena, AsyncPolicy, NotifyWaiters, TreiberWaiters, WaitRegistration,
-    Waiter,
+    AsyncBuddyArena, AsyncFixedArena, BuddyWaiter, NotifyWaiters, WaitRegistration, Waiter,
 };

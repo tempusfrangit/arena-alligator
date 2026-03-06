@@ -21,7 +21,7 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) auto_spill: bool,
     pub(crate) metrics: MetricsState,
     #[cfg(feature = "async-alloc")]
-    pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
+    pub(crate) wake_handle: Option<crate::async_alloc::BuddyWakeHandle>,
 }
 
 // SAFETY: buddy allocations hand out disjoint blocks. Shared metadata access
@@ -139,7 +139,7 @@ impl BuddyArena {
         self.inner.free_bitmaps[order].is_free(block_idx)
     }
 
-    fn order_for_request(&self, len: usize) -> Option<usize> {
+    pub(crate) fn order_for_request(&self, len: usize) -> Option<usize> {
         let size = len.max(self.inner.min_block_size).next_power_of_two();
         if size > self.inner.total_size {
             return None;
@@ -251,7 +251,7 @@ impl BuddyArenaBuilder {
 
     fn build_inner(
         self,
-        #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::WakeHandle>,
+        #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::BuddyWakeHandle>,
     ) -> Result<BuddyArenaInner, BuildError> {
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
@@ -301,9 +301,15 @@ impl BuddyArenaBuilder {
 
 #[cfg(feature = "async-alloc")]
 impl BuddyArenaBuilder {
-    /// Build an async-capable buddy arena using notify-based waiters.
+    /// Build an async-capable buddy arena using the default per-order notify waiter.
     pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
-        self.build_async_with(crate::async_alloc::NotifyWaiters::new())
+        let max_order = buddy_max_order(
+            self.total_size.get(),
+            self.min_block_size.get(),
+            self.alignment,
+        )
+        .ok_or(BuildError::InvalidGeometry)?;
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
     }
 
     /// Build an async-capable buddy arena with a custom waiter policy.
@@ -312,10 +318,10 @@ impl BuddyArenaBuilder {
         waiters: W,
     ) -> Result<crate::async_alloc::AsyncBuddyArena<W>, BuildError>
     where
-        W: crate::async_alloc::Waiter,
+        W: crate::async_alloc::BuddyWaiter,
     {
         let waiters = std::sync::Arc::new(waiters);
-        let inner = self.build_inner(Some(crate::async_alloc::WakeHandle::new(
+        let inner = self.build_inner(Some(crate::async_alloc::BuddyWakeHandle::new(
             std::sync::Arc::clone(&waiters),
         )))?;
 
@@ -350,7 +356,7 @@ impl BuddyArenaInner {
         self.free_bitmaps[order].free(block_idx);
         #[cfg(feature = "async-alloc")]
         if let Some(wake_handle) = &self.wake_handle {
-            wake_handle.wake();
+            wake_handle.wake(order);
         }
     }
 
