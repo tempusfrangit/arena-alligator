@@ -395,6 +395,7 @@ impl Waiter for NotifyWaiters {
             future: self.inner.fixed_slot.notify.clone().notified_owned(),
             inner: Arc::clone(&self.inner),
             registered: false,
+            woken: false,
         }
     }
 
@@ -426,6 +427,7 @@ pub struct NotifyRegistration {
     future: OwnedNotified,
     inner: Arc<NotifyWaitersInner>,
     registered: bool,
+    woken: bool,
 }
 
 impl WaitRegistration for NotifyRegistration {
@@ -445,6 +447,7 @@ impl WaitRegistration for NotifyRegistration {
             this.inner.fixed_slot.count.fetch_sub(1, Ordering::Release);
             this.registered = false;
         }
+        this.woken = false;
     }
 }
 
@@ -454,9 +457,12 @@ impl Future for NotifyRegistration {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
         let poll = unsafe { Pin::new_unchecked(&mut this.future) }.poll(cx);
-        if poll.is_ready() && this.registered {
-            this.inner.fixed_slot.count.fetch_sub(1, Ordering::Release);
-            this.registered = false;
+        if poll.is_ready() {
+            if this.registered {
+                this.inner.fixed_slot.count.fetch_sub(1, Ordering::Release);
+                this.registered = false;
+            }
+            this.woken = true;
         }
         poll
     }
@@ -466,6 +472,15 @@ impl Drop for NotifyRegistration {
     fn drop(&mut self) {
         if self.registered {
             self.inner.fixed_slot.count.fetch_sub(1, Ordering::Release);
+        }
+        // If we consumed a Notify permit (poll returned Ready) but were dropped
+        // before the allocation loop could retry, propagate the wake so the
+        // next waiter isn't stalled. The OwnedNotified won't propagate on its
+        // own because it was already polled to completion.
+        // Only propagate when another waiter exists — otherwise the stored
+        // permit creates a hot retry loop under full-arena conditions.
+        if self.woken && self.inner.fixed_slot.count.load(Ordering::Acquire) > 0 {
+            self.inner.fixed_slot.notify.notify_one();
         }
     }
 }
@@ -919,6 +934,102 @@ mod tests {
 
         drop(buf);
         let _buf2 = arena.allocate().unwrap();
+    }
+
+    /// A woken registration that is dropped without allocating must propagate
+    /// the wake to the next waiter. Without this, the Notify permit is consumed
+    /// and the second waiter stalls forever.
+    #[tokio::test(flavor = "current_thread")]
+    async fn fixed_woken_drop_propagates_to_next_waiter() {
+        let waiters = Arc::new(NotifyWaiters::new(1));
+
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
+
+        // Task A: registers, gets woken, then drops registration without
+        // allocating — simulates a cancelled task that consumed the permit.
+        let w = Arc::clone(&waiters);
+        let h_a = tokio::spawn(async move {
+            let reg = Waiter::register(&*w);
+            tokio::pin!(reg);
+            reg.as_mut().prepare();
+            ready_tx.send(()).ok();
+            reg.await;
+            // Drop reg without doing anything — permit consumed, no allocation
+        });
+
+        // Wait for task A to register
+        ready_rx.await.ok();
+
+        // Task B: registers after A
+        let w2 = Arc::clone(&waiters);
+        let h_b = tokio::spawn(async move {
+            let reg = Waiter::register(&*w2);
+            tokio::pin!(reg);
+            reg.as_mut().prepare();
+            reg.await;
+        });
+
+        // Let task B register and start awaiting
+        tokio::task::yield_now().await;
+
+        // One wake — task A gets the permit (first in Notify queue)
+        Waiter::wake(&*waiters);
+
+        // Let task A run to completion (consumes permit, drops registration)
+        let _ = h_a.await;
+
+        // Task B must complete — propagation from A's drop must re-notify
+        timeout(Duration::from_secs(2), h_b)
+            .await
+            .expect("task B must not stall when A drops after wake")
+            .expect("task B should not panic");
+    }
+
+    /// When the woken waiter is the last waiter (count == 0), dropping it
+    /// must NOT store a stale permit. A stale permit would cause the next
+    /// registrant to immediately wake, fail allocation, drop, re-notify —
+    /// creating a hot retry loop.
+    #[tokio::test(flavor = "current_thread")]
+    async fn fixed_last_waiter_woken_drop_no_stale_permit() {
+        let waiters = Arc::new(NotifyWaiters::new(1));
+
+        // Single waiter — no peers
+        let w = Arc::clone(&waiters);
+        let h = tokio::spawn(async move {
+            let reg = Waiter::register(&*w);
+            tokio::pin!(reg);
+            reg.as_mut().prepare();
+            reg.await;
+        });
+
+        tokio::task::yield_now().await;
+
+        // Wake the sole waiter
+        Waiter::wake(&*waiters);
+        let _ = h.await;
+
+        // No waiters remain. If a stale permit was stored, the next
+        // registration would resolve immediately (spurious wake).
+        let w2 = Arc::clone(&waiters);
+        let h2 = tokio::spawn(async move {
+            let reg = Waiter::register(&*w2);
+            tokio::pin!(reg);
+            reg.as_mut().prepare();
+            // This must NOT resolve immediately — no real wake happened
+            reg.await;
+        });
+
+        tokio::task::yield_now().await;
+
+        // h2 should still be pending (no stale permit)
+        assert!(!h2.is_finished(), "stale permit caused spurious wake");
+
+        // Clean up: wake h2 so it completes
+        Waiter::wake(&*waiters);
+        timeout(Duration::from_secs(1), h2)
+            .await
+            .expect("cleanup wake should work")
+            .expect("no panic");
     }
 
     #[tokio::test]
