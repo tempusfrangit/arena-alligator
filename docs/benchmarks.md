@@ -59,7 +59,7 @@ open target/criterion/report/index.html
 
 ## Real-Iron Benchmarks (k8s)
 
-Source artifact: local unpacked Cog output at `arena-alligator-bench-results/` from a run with:
+Source artifact: local unpacked output from a run on a K8S container with 40vCPU (A100-GPU class machine):
 
 - Repeats: `3`
 - Modes: `bench` and `bench:extreme`
@@ -98,8 +98,3 @@ The tables below are median throughput across the 3 repeats using the mid estima
 | `buddy_contention` | `arena_64mb_hold_50pct/4` | `4.145 Melem/s` | `4.673 Melem/s` |
 | `buddy_contention` | `arena_64mb_hold_50pct/40` | `122.920 Melem/s` | `137.000 Melem/s` |
 
-### k8s Run Artifacts
-
-- Summary: [`arena-alligator-bench-results/results/summary.md`](../arena-alligator-bench-results/results/summary.md)
-- Logs: [`arena-alligator-bench-results/results/logs`](../arena-alligator-bench-results/results/logs)
-- Criterion snapshots: [`arena-alligator-bench-results/results/criterion`](../arena-alligator-bench-results/results/criterion)
