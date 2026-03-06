@@ -131,6 +131,10 @@ Override via `ARENA_BENCH_EXTREME_THREADS=<n>`.
 
 Pre-1.0. The crate is usable now, but the API may still move before it settles.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflow and PR expectations.
+
 ## License
 
 MIT
