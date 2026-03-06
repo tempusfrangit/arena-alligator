@@ -3,7 +3,7 @@
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use arena_alligator::{AsyncPolicy, FixedArena};
+use arena_alligator::FixedArena;
 use bytes::BufMut;
 
 #[tokio::main]
@@ -13,7 +13,7 @@ async fn main() {
             NonZeroUsize::new(2).unwrap(),
             NonZeroUsize::new(256).unwrap(),
         )
-        .build_async(AsyncPolicy::Notify)
+        .build_async()
         .unwrap(),
     );
 
