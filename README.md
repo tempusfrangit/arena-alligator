@@ -105,6 +105,10 @@ cargo run --example fixed_buffer
 cargo run --example async_alloc --features async-alloc
 ```
 
+## Deployment guides
+
+- [NUMA-aware deployment pattern](docs/numa.md): per-node arenas, thread pinning, and bounded cross-node fallback.
+
 ## Status
 
 Pre-1.0. The crate is usable now, but the API may still move before it settles.
