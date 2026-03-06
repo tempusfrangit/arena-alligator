@@ -13,6 +13,8 @@ const FIXED_SLOT_COUNT: usize = 65_536;
 const BUDDY_TOTAL_SIZE: usize = 64 * 1024 * 1024;
 const BUDDY_MIN_BLOCK: usize = 256;
 const BUDDY_SIZES: [usize; 8] = [192, 768, 2048, 6144, 12_288, 3072, 512, 16_384];
+const EXTREME_FLAG_ENV: &str = "ARENA_BENCH_EXTREME";
+const EXTREME_THREADS_ENV: &str = "ARENA_BENCH_EXTREME_THREADS";
 
 fn nz(n: usize) -> NonZeroUsize {
     NonZeroUsize::new(n).unwrap()
@@ -20,6 +22,13 @@ fn nz(n: usize) -> NonZeroUsize {
 
 fn contention_levels() -> Vec<usize> {
     let mut levels = vec![1, 4, thread::available_parallelism().map_or(8, usize::from)];
+    if std::env::var_os(EXTREME_FLAG_ENV).is_some() {
+        let extreme_threads = std::env::var(EXTREME_THREADS_ENV)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(40);
+        levels.push(extreme_threads);
+    }
     levels.sort_unstable();
     levels.dedup();
     levels

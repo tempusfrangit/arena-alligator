@@ -105,6 +105,23 @@ cargo run --example fixed_buffer
 cargo run --example async_alloc --features async-alloc
 ```
 
+## Benchmarks
+
+Benchmark summary tables and local Criterion HTML report links are in
+[`docs/benchmarks.md`](docs/benchmarks.md).
+That page now includes both the Apple M4 Max baseline and a real-hardware
+k8s run summary (normal + extreme modes).
+
+Run benchmarks with:
+
+```sh
+mise run bench
+mise run bench:extreme
+```
+
+`bench:extreme` enables an additional high-thread contention point (`40` threads by default).
+Override via `ARENA_BENCH_EXTREME_THREADS=<n>`.
+
 ## Status
 
 Pre-1.0. The crate is usable now, but the API may still move before it settles.

@@ -12,6 +12,9 @@
 !/docs/**/*.svg
 !/docs/**/*.jpg
 !/docs/**/*.png
+!/docs/benchmarks/
+!/docs/benchmarks/criterion/
+!/docs/benchmarks/criterion/**
 !README.md
 !/LICENSE
 
