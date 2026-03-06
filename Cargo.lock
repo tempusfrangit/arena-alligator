@@ -29,6 +29,7 @@ version = "0.5.1"
 dependencies = [
  "bytes",
  "criterion",
+ "libc",
  "loom",
  "tokio",
  "tracing",

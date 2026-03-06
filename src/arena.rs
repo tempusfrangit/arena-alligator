@@ -8,6 +8,135 @@ use crate::error::{AllocError, BuildError};
 use crate::metrics::{FixedArenaMetrics, MetricsState};
 use crate::sync::Arc;
 
+/// Page size used for prefaulting the arena backing allocation.
+///
+/// [`build()`](crate::FixedArenaBuilder::build) touches every page at
+/// build time when the page size is known ([`Auto`](Self::Auto) or
+/// [`Size`](Self::Size)). Use
+/// [`build_unfaulted()`](crate::FixedArenaBuilder::build_unfaulted) to
+/// defer faulting for explicit control (e.g. NUMA placement).
+///
+/// # NUMA placement
+///
+/// The kernel allocates physical pages on the node where the faulting
+/// thread runs. Three approaches:
+///
+/// 1. **Pin the builder thread** and call `build()`. Pages fault on the
+///    pinned node immediately.
+/// 2. **`build_unfaulted()`** and call
+///    [`fault_pages()`](crate::Unfaulted::fault_pages) from a thread
+///    pinned to the target node.
+/// 3. **`build_unfaulted().into_inner()`** and let the kernel
+///    demand-fault pages as each thread touches them (first-touch policy).
+///
+/// # Huge pages
+///
+/// Transparent huge pages (THP) are handled by the kernel and work with
+/// any page size here. For pre-allocated huge pages, pass the huge-page
+/// size (e.g. 2 MiB) via [`Size`](Self::Size).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageSize {
+    /// Page size is not known. No prefaulting will occur.
+    Unknown,
+    /// Detect page size from the OS via `sysconf(_SC_PAGESIZE)`.
+    ///
+    /// Only available on Unix with the `libc` feature enabled.
+    #[cfg(all(unix, feature = "libc"))]
+    Auto,
+    /// Caller-supplied page size.
+    Size(NonZeroUsize),
+}
+
+impl PageSize {
+    pub(crate) fn resolve(self) -> Option<usize> {
+        match self {
+            PageSize::Unknown => None,
+            #[cfg(all(unix, feature = "libc"))]
+            PageSize::Auto => Some(os_page_size()),
+            PageSize::Size(n) => Some(n.get()),
+        }
+    }
+}
+
+#[cfg(all(unix, feature = "libc"))]
+fn os_page_size() -> usize {
+    // SAFETY: sysconf(_SC_PAGESIZE) is always safe and returns a positive value.
+    let ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    debug_assert!(ps > 0);
+    ps as usize
+}
+
+/// Touch one byte per page to force physical backing.
+pub(crate) fn prefault_region(ptr: *mut u8, len: usize, page_size: usize) {
+    let mut offset = 0;
+    while offset < len {
+        // SAFETY: ptr..ptr+len is a valid allocation. Each write is within bounds.
+        unsafe { ptr.add(offset).write_volatile(0) };
+        offset += page_size;
+    }
+}
+
+/// An arena whose backing pages have not yet been faulted.
+///
+/// Created by [`FixedArenaBuilder::build_unfaulted()`] or
+/// [`BuddyArenaBuilder::build_unfaulted()`](crate::BuddyArenaBuilder::build_unfaulted).
+///
+/// - [`fault_pages()`](Self::fault_pages) walks every page explicitly,
+///   then returns the arena. Use from a NUMA-pinned thread.
+/// - [`into_inner()`](Self::into_inner) skips the walk. The kernel
+///   demand-faults pages on first access (first-touch policy).
+/// - [`allocate()`](Unfaulted::<FixedArena>::allocate) is a convenience
+///   for `into_inner()` followed by allocate.
+pub struct Unfaulted<A> {
+    ptr: *mut u8,
+    total_size: usize,
+    page_size: Option<usize>,
+    inner: A,
+}
+
+// SAFETY: the inner arena is Send, and the raw ptr is anchored by it.
+unsafe impl<A: Send> Send for Unfaulted<A> {}
+
+impl<A> Unfaulted<A> {
+    pub(crate) fn new(ptr: *mut u8, total_size: usize, page_size: Option<usize>, inner: A) -> Self {
+        Self {
+            ptr,
+            total_size,
+            page_size,
+            inner,
+        }
+    }
+
+    /// Walk every page in the backing allocation to force physical backing,
+    /// then return the unwrapped arena.
+    ///
+    /// Sequential faulting (low-to-high) is friendlier to TLB prefetchers
+    /// and gives the kernel a better chance at physically contiguous frames.
+    pub fn fault_pages(self) -> A {
+        if let Some(ps) = self.page_size {
+            prefault_region(self.ptr, self.total_size, ps);
+        }
+        self.inner
+    }
+
+    /// Unwrap the arena without faulting. Pages will be demand-faulted by
+    /// the kernel on first access.
+    pub fn into_inner(self) -> A {
+        self.inner
+    }
+}
+
+impl Unfaulted<FixedArena> {
+    /// Unwrap without faulting and allocate immediately.
+    ///
+    /// Pages will be demand-faulted by the kernel as written.
+    pub fn allocate(self) -> Result<(FixedArena, Buffer), AllocError> {
+        let arena = self.into_inner();
+        let buf = arena.allocate()?;
+        Ok((arena, buf))
+    }
+}
+
 pub(crate) struct ArenaInner {
     pub(crate) ptr: *mut u8,
     layout: Layout,
@@ -65,6 +194,10 @@ impl FixedArena {
             slot_capacity,
             alignment: 1,
             auto_spill: false,
+            #[cfg(all(unix, feature = "libc"))]
+            page_size: PageSize::Auto,
+            #[cfg(not(all(unix, feature = "libc")))]
+            page_size: PageSize::Unknown,
         }
     }
 
@@ -110,6 +243,7 @@ pub struct FixedArenaBuilder {
     slot_capacity: NonZeroUsize,
     alignment: usize,
     auto_spill: bool,
+    page_size: PageSize,
 }
 
 impl FixedArenaBuilder {
@@ -128,8 +262,50 @@ impl FixedArenaBuilder {
         self
     }
 
-    /// Build the arena.
+    /// Set the page size used for prefaulting.
+    ///
+    /// Default: [`PageSize::Auto`] on Unix with the `libc` feature,
+    /// [`PageSize::Unknown`] otherwise.
+    ///
+    /// When set to [`PageSize::Auto`] or [`PageSize::Size`], [`build()`](Self::build)
+    /// touches every page at build time. Use [`build_unfaulted()`](Self::build_unfaulted)
+    /// to defer the walk (e.g. for NUMA placement).
+    pub fn page_size(mut self, policy: PageSize) -> Self {
+        self.page_size = policy;
+        self
+    }
+
+    /// Build the arena, prefaulting pages if a page size is configured.
     pub fn build(self) -> Result<FixedArena, BuildError> {
+        let page_size = self.page_size.resolve();
+        let arena = self.build_inner()?;
+        if let Some(ps) = page_size {
+            prefault_region(
+                arena.inner.ptr,
+                arena.inner.slot_count * arena.inner.slot_capacity,
+                ps,
+            );
+        }
+        Ok(arena)
+    }
+
+    /// Build the arena without prefaulting. Returns an [`Unfaulted`] wrapper.
+    ///
+    /// See [`Unfaulted`] for the three consumption paths: explicit fault,
+    /// demand-fault, or direct allocate.
+    pub fn build_unfaulted(self) -> Result<Unfaulted<FixedArena>, BuildError> {
+        let page_size = self.page_size.resolve();
+        let arena = self.build_inner()?;
+        let total_size = arena.inner.slot_count * arena.inner.slot_capacity;
+        Ok(Unfaulted::new(
+            arena.inner.ptr,
+            total_size,
+            page_size,
+            arena,
+        ))
+    }
+
+    fn build_inner(self) -> Result<FixedArena, BuildError> {
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
         }
@@ -186,6 +362,8 @@ impl FixedArenaBuilder {
     where
         W: crate::async_alloc::Waiter,
     {
+        let page_size = self.page_size.resolve();
+
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
         }
@@ -207,6 +385,10 @@ impl FixedArenaBuilder {
         let ptr = unsafe { std::alloc::alloc(layout) };
         if ptr.is_null() {
             std::alloc::handle_alloc_error(layout);
+        }
+
+        if let Some(ps) = page_size {
+            prefault_region(ptr, total_size, ps);
         }
 
         let waiters = std::sync::Arc::new(waiters);
@@ -330,6 +512,56 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(arena.slot_capacity(), 4096);
+    }
+
+    #[test]
+    fn prefault_disabled_builds() {
+        let arena = FixedArena::builder(nz(4), nz(64))
+            .page_size(PageSize::Unknown)
+            .build()
+            .unwrap();
+        assert_eq!(arena.slot_count(), 4);
+    }
+
+    #[test]
+    fn prefault_explicit_page_size_builds() {
+        let arena = FixedArena::builder(nz(4), nz(4096))
+            .page_size(PageSize::Size(nz(4096)))
+            .build()
+            .unwrap();
+        assert_eq!(arena.slot_count(), 4);
+    }
+
+    #[cfg(all(unix, feature = "libc"))]
+    #[test]
+    fn prefault_auto_builds() {
+        let arena = FixedArena::builder(nz(4), nz(4096))
+            .page_size(PageSize::Auto)
+            .build()
+            .unwrap();
+        assert_eq!(arena.slot_count(), 4);
+    }
+
+    #[test]
+    fn build_unfaulted_then_fault_pages() {
+        let faultable = FixedArena::builder(nz(4), nz(4096))
+            .page_size(PageSize::Size(nz(4096)))
+            .build_unfaulted()
+            .unwrap();
+        let arena = faultable.fault_pages();
+        assert_eq!(arena.slot_count(), 4);
+        let _buf = arena.allocate().unwrap();
+    }
+
+    #[test]
+    fn build_unfaulted_into_inner_skips_fault() {
+        let faultable = FixedArena::builder(nz(4), nz(64))
+            .page_size(PageSize::Unknown)
+            .build_unfaulted()
+            .unwrap();
+        let arena = faultable.into_inner();
+        assert_eq!(arena.slot_count(), 4);
+        let _buf = arena.allocate().unwrap();
     }
 
     #[test]

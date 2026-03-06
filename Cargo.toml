@@ -10,6 +10,7 @@ documentation = "https://docs.rs/arena-alligator"
 
 [dependencies]
 bytes = "1.9"
+libc = { version = "0.2", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
 tracing = "0.1"
 
@@ -22,7 +23,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
 
 [features]
-default = []
+default = ["libc"]
 async-alloc = ["dep:tokio"]
 
 [[bench]]

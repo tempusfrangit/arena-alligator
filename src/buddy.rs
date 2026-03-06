@@ -65,6 +65,10 @@ impl BuddyArena {
             min_block_size,
             alignment: 1,
             auto_spill: false,
+            #[cfg(all(unix, feature = "libc"))]
+            page_size: crate::arena::PageSize::Auto,
+            #[cfg(not(all(unix, feature = "libc")))]
+            page_size: crate::arena::PageSize::Unknown,
         }
     }
 
@@ -219,6 +223,7 @@ pub struct BuddyArenaBuilder {
     min_block_size: NonZeroUsize,
     alignment: usize,
     auto_spill: bool,
+    page_size: crate::arena::PageSize,
 }
 
 impl BuddyArenaBuilder {
@@ -238,21 +243,58 @@ impl BuddyArenaBuilder {
         self
     }
 
-    /// Build the buddy arena metadata and backing allocation.
-    pub fn build(self) -> Result<BuddyArena, BuildError> {
-        #[cfg(feature = "async-alloc")]
-        let inner = self.build_inner(None)?;
-        #[cfg(not(feature = "async-alloc"))]
-        let inner = self.build_inner()?;
-        Ok(BuddyArena {
-            inner: Arc::new(inner),
-        })
+    /// Set the page size used for prefaulting.
+    ///
+    /// Default: [`Auto`](crate::PageSize::Auto) on Unix with the `libc`
+    /// feature, [`Unknown`](crate::PageSize::Unknown) otherwise.
+    ///
+    /// When set to [`Auto`](crate::PageSize::Auto) or
+    /// [`Size`](crate::PageSize::Size), [`build()`](Self::build) touches
+    /// every page at build time. Use
+    /// [`build_unfaulted()`](Self::build_unfaulted) to defer the walk
+    /// (e.g. for NUMA placement).
+    pub fn page_size(mut self, policy: crate::arena::PageSize) -> Self {
+        self.page_size = policy;
+        self
     }
 
-    fn build_inner(
+    /// Build the buddy arena, prefaulting pages if a page size is configured.
+    pub fn build(self) -> Result<BuddyArena, BuildError> {
+        let page_size = self.page_size.resolve();
+        let arena = self.build_raw(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        if let Some(ps) = page_size {
+            crate::arena::prefault_region(arena.inner.ptr, arena.inner.total_size, ps);
+        }
+        Ok(arena)
+    }
+
+    /// Build the arena without prefaulting. Returns an
+    /// [`Unfaulted`](crate::Unfaulted) wrapper.
+    ///
+    /// See [`Unfaulted`](crate::Unfaulted) for the three consumption
+    /// paths: explicit fault, demand-fault, or direct allocate.
+    pub fn build_unfaulted(self) -> Result<crate::arena::Unfaulted<BuddyArena>, BuildError> {
+        let page_size = self.page_size.resolve();
+        let arena = self.build_raw(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        let total_size = arena.inner.total_size;
+        Ok(crate::arena::Unfaulted::new(
+            arena.inner.ptr,
+            total_size,
+            page_size,
+            arena,
+        ))
+    }
+
+    fn build_raw(
         self,
         #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::BuddyWakeHandle>,
-    ) -> Result<BuddyArenaInner, BuildError> {
+    ) -> Result<BuddyArena, BuildError> {
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
         }
@@ -295,7 +337,9 @@ impl BuddyArenaBuilder {
             wake_handle: waker,
         };
 
-        Ok(inner)
+        Ok(BuddyArena {
+            inner: Arc::new(inner),
+        })
     }
 }
 
@@ -320,17 +364,17 @@ impl BuddyArenaBuilder {
     where
         W: crate::async_alloc::BuddyWaiter,
     {
+        let page_size = self.page_size.resolve();
         let waiters = std::sync::Arc::new(waiters);
-        let inner = self.build_inner(Some(crate::async_alloc::BuddyWakeHandle::new(
+        let arena = self.build_raw(Some(crate::async_alloc::BuddyWakeHandle::new(
             std::sync::Arc::clone(&waiters),
         )))?;
 
-        Ok(crate::async_alloc::AsyncBuddyArena::new(
-            BuddyArena {
-                inner: Arc::new(inner),
-            },
-            waiters,
-        ))
+        if let Some(ps) = page_size {
+            crate::arena::prefault_region(arena.inner.ptr, arena.inner.total_size, ps);
+        }
+
+        Ok(crate::async_alloc::AsyncBuddyArena::new(arena, waiters))
     }
 }
 
@@ -581,5 +625,27 @@ mod tests {
         let fully_free = arena.metrics();
         assert_eq!(fully_free.coalesces, 1);
         assert_eq!(fully_free.largest_free_block, 4096);
+    }
+
+    #[test]
+    fn build_unfaulted_then_fault_pages() {
+        let unfaulted = BuddyArena::builder(nz(4096), nz(512))
+            .page_size(crate::arena::PageSize::Size(nz(4096)))
+            .build_unfaulted()
+            .unwrap();
+        let arena = unfaulted.fault_pages();
+        assert_eq!(arena.total_size(), 4096);
+        let _buf = arena.allocate(nz(512)).unwrap();
+    }
+
+    #[test]
+    fn build_unfaulted_into_inner() {
+        let unfaulted = BuddyArena::builder(nz(4096), nz(512))
+            .page_size(crate::arena::PageSize::Unknown)
+            .build_unfaulted()
+            .unwrap();
+        let arena = unfaulted.into_inner();
+        assert_eq!(arena.total_size(), 4096);
+        let _buf = arena.allocate(nz(512)).unwrap();
     }
 }
