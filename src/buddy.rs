@@ -19,6 +19,7 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) free_bitmaps: Box<[AtomicBitmap]>,
     pub(crate) nonempty_orders: AtomicUsize,
     pub(crate) auto_spill: bool,
+    pub(crate) init_policy: crate::arena::InitPolicy,
     pub(crate) metrics: MetricsState,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::BuddyWakeHandle>,
@@ -65,6 +66,7 @@ impl BuddyArena {
             min_block_size,
             alignment: 1,
             auto_spill: false,
+            init_policy: crate::arena::InitPolicy::default(),
             #[cfg(all(unix, feature = "libc"))]
             page_size: crate::arena::PageSize::Auto,
             #[cfg(not(all(unix, feature = "libc")))]
@@ -112,6 +114,18 @@ impl BuddyArena {
         let (final_order, final_block_idx) = self.split_down(order, block_idx, target_order);
         let capacity = self.block_size(final_order);
         let offset = self.block_offset(final_order, final_block_idx);
+
+        match self.inner.init_policy {
+            crate::arena::InitPolicy::Zero => {
+                // SAFETY: ptr+offset..ptr+offset+capacity is within the arena allocation
+                // and exclusively owned by this block (bitmap claim enforced above).
+                unsafe {
+                    self.inner.ptr.add(offset).write_bytes(0, capacity);
+                }
+            }
+            crate::arena::InitPolicy::Uninit => {}
+        }
+
         self.inner.metrics.record_alloc_success(capacity);
 
         Ok(Buffer::new_buddy(
@@ -223,6 +237,7 @@ pub struct BuddyArenaBuilder {
     min_block_size: NonZeroUsize,
     alignment: usize,
     auto_spill: bool,
+    init_policy: crate::arena::InitPolicy,
     page_size: crate::arena::PageSize,
 }
 
@@ -240,6 +255,17 @@ impl BuddyArenaBuilder {
     /// the buddy block back to the arena.
     pub fn auto_spill(mut self) -> Self {
         self.auto_spill = true;
+        self
+    }
+
+    /// Set the initialization policy for allocated buffers.
+    ///
+    /// Default: [`InitPolicy::Uninit`](crate::InitPolicy::Uninit). When set
+    /// to [`InitPolicy::Zero`](crate::InitPolicy::Zero), every call to
+    /// [`BuddyArena::allocate()`] writes zeroes across the block before
+    /// returning the buffer.
+    pub fn init_policy(mut self, policy: crate::arena::InitPolicy) -> Self {
+        self.init_policy = policy;
         self
     }
 
@@ -332,6 +358,7 @@ impl BuddyArenaBuilder {
             free_bitmaps: free_bitmaps.into_boxed_slice(),
             nonempty_orders: AtomicUsize::new(1usize << max_order),
             auto_spill: self.auto_spill,
+            init_policy: self.init_policy,
             metrics: MetricsState::new(total_size),
             #[cfg(feature = "async-alloc")]
             wake_handle: waker,
@@ -647,5 +674,27 @@ mod tests {
         let arena = unfaulted.into_inner();
         assert_eq!(arena.total_size(), 4096);
         let _buf = arena.allocate(nz(512)).unwrap();
+    }
+
+    #[test]
+    fn init_policy_zero_fills_block() {
+        use bytes::BufMut;
+
+        let arena = BuddyArena::builder(nz(1024), nz(1024))
+            .init_policy(crate::arena::InitPolicy::Zero)
+            .page_size(crate::arena::PageSize::Unknown)
+            .build()
+            .unwrap();
+
+        // Write non-zero data, freeze, drop to return the block.
+        let mut buf = arena.allocate(nz(512)).unwrap();
+        buf.put_slice(&[0xAB; 512]);
+        let bytes = buf.freeze();
+        drop(bytes);
+
+        // Re-allocate; zero policy should have cleared it.
+        let buf = arena.allocate(nz(512)).unwrap();
+        let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 1024) };
+        assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
     }
 }
