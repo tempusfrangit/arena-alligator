@@ -64,7 +64,7 @@ mod sync;
 #[cfg(feature = "async-alloc")]
 mod async_alloc;
 
-pub use arena::{FixedArena, FixedArenaBuilder};
+pub use arena::{FixedArena, FixedArenaBuilder, PageSize, Unfaulted};
 pub use buddy::{BuddyArena, BuddyArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};

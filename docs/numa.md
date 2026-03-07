@@ -4,6 +4,38 @@ This allocator is fast enough that NUMA placement usually dominates allocator in
 
 Baseline rule: use one arena per NUMA node, and keep worker threads on that node.
 
+## Page faulting and placement
+
+The kernel allocates physical pages on the NUMA node where the faulting thread runs. The crate gives you three ways to control this:
+
+**Pin the builder thread.** Call `build()` from a thread pinned to the target node. Pages are prefaulted on that node at build time.
+
+```rust,ignore
+// Thread pinned to node 0
+let arena = FixedArena::builder(nz(1024), nz(4096))
+    .page_size(PageSize::Auto)
+    .build()?;
+```
+
+**Deferred faulting.** Call `build_unfaulted()`, move the `Unfaulted` wrapper to a pinned thread, then call `fault_pages()`.
+
+```rust,ignore
+let unfaulted = FixedArena::builder(nz(1024), nz(4096))
+    .page_size(PageSize::Auto)
+    .build_unfaulted()?;
+
+// On pinned thread:
+let arena = unfaulted.fault_pages();
+```
+
+**Kernel demand-faulting.** Skip the prefault walk entirely. The kernel faults pages on whichever thread touches them first (first-touch policy). Useful when workers are already pinned and each will naturally touch its own slice.
+
+```rust,ignore
+let arena = FixedArena::builder(nz(1024), nz(4096))
+    .build_unfaulted()?
+    .into_inner();
+```
+
 ## Practical defaults
 
 1. Create one allocator instance per NUMA node.
