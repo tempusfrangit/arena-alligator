@@ -76,6 +76,20 @@ pub(crate) fn prefault_region(ptr: *mut u8, len: usize, page_size: usize) {
     }
 }
 
+/// Initialization policy applied to each buffer on allocate.
+///
+/// Controls whether arena memory is initialized before being handed to the
+/// caller. The default ([`Uninit`](Self::Uninit)) leaves memory as-is for
+/// maximum throughput.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InitPolicy {
+    /// Leave memory uninitialized (default).
+    #[default]
+    Uninit,
+    /// Zero-fill the allocation region before returning the buffer.
+    Zero,
+}
+
 /// An arena whose backing pages have not yet been faulted.
 ///
 /// Created by [`FixedArenaBuilder::build_unfaulted()`] or
@@ -144,6 +158,7 @@ pub(crate) struct ArenaInner {
     pub(crate) slot_count: usize,
     pub(crate) bitmap: AtomicBitmap,
     pub(crate) auto_spill: bool,
+    pub(crate) init_policy: InitPolicy,
     pub(crate) metrics: MetricsState,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
@@ -194,6 +209,7 @@ impl FixedArena {
             slot_capacity,
             alignment: 1,
             auto_spill: false,
+            init_policy: InitPolicy::default(),
             #[cfg(all(unix, feature = "libc"))]
             page_size: PageSize::Auto,
             #[cfg(not(all(unix, feature = "libc")))]
@@ -224,6 +240,21 @@ impl FixedArena {
         };
 
         let offset = slot_idx * self.inner.slot_capacity;
+
+        match self.inner.init_policy {
+            InitPolicy::Zero => {
+                // SAFETY: ptr+offset..ptr+offset+slot_capacity is within the arena allocation
+                // and exclusively owned by this slot (bitmap claim enforced above).
+                unsafe {
+                    self.inner
+                        .ptr
+                        .add(offset)
+                        .write_bytes(0, self.inner.slot_capacity);
+                }
+            }
+            InitPolicy::Uninit => {}
+        }
+
         self.inner
             .metrics
             .record_alloc_success(self.inner.slot_capacity);
@@ -243,6 +274,7 @@ pub struct FixedArenaBuilder {
     slot_capacity: NonZeroUsize,
     alignment: usize,
     auto_spill: bool,
+    init_policy: InitPolicy,
     page_size: PageSize,
 }
 
@@ -259,6 +291,16 @@ impl FixedArenaBuilder {
     /// Enable auto-spill: overflow writes copy to heap, freeing the arena slot.
     pub fn auto_spill(mut self) -> Self {
         self.auto_spill = true;
+        self
+    }
+
+    /// Set the initialization policy for allocated buffers.
+    ///
+    /// Default: [`InitPolicy::Uninit`]. When set to [`InitPolicy::Zero`],
+    /// every call to [`FixedArena::allocate()`] writes zeroes across the
+    /// slot before returning the buffer.
+    pub fn init_policy(mut self, policy: InitPolicy) -> Self {
+        self.init_policy = policy;
         self
     }
 
@@ -336,6 +378,7 @@ impl FixedArenaBuilder {
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
             auto_spill: self.auto_spill,
+            init_policy: self.init_policy,
             metrics: MetricsState::new(total_size),
             #[cfg(feature = "async-alloc")]
             wake_handle: None,
@@ -400,6 +443,7 @@ impl FixedArenaBuilder {
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
             auto_spill: self.auto_spill,
+            init_policy: self.init_policy,
             metrics: MetricsState::new(total_size),
             wake_handle: Some(crate::async_alloc::WakeHandle::new(std::sync::Arc::clone(
                 &waiters,
@@ -604,5 +648,32 @@ mod tests {
             arena.allocate().is_ok(),
             "slot should be available after drop"
         );
+    }
+
+    #[test]
+    fn init_policy_zero_fills_slot() {
+        use bytes::BufMut;
+
+        let arena = FixedArena::builder(nz(1), nz(64))
+            .init_policy(InitPolicy::Zero)
+            .page_size(PageSize::Unknown)
+            .build()
+            .unwrap();
+
+        // Write non-zero data, freeze, drop to return the slot.
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(&[0xAB; 64]);
+        let bytes = buf.freeze();
+        drop(bytes);
+
+        // Re-allocate the same slot; zero policy should have cleared it.
+        let buf = arena.allocate().unwrap();
+        let slot = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
+        assert!(slot.iter().all(|&b| b == 0), "slot should be zeroed");
+    }
+
+    #[test]
+    fn init_policy_default_is_uninit() {
+        assert_eq!(InitPolicy::default(), InitPolicy::Uninit);
     }
 }
