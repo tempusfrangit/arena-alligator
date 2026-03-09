@@ -64,13 +64,7 @@ impl BuddyArena {
         BuddyArenaBuilder {
             total_size,
             min_block_size,
-            alignment: 1,
-            auto_spill: false,
-            init_policy: crate::arena::InitPolicy::default(),
-            #[cfg(all(unix, feature = "libc"))]
-            page_size: crate::arena::PageSize::Auto,
-            #[cfg(not(all(unix, feature = "libc")))]
-            page_size: crate::arena::PageSize::Unknown,
+            config: crate::arena::BuildConfig::new(),
         }
     }
 
@@ -235,10 +229,7 @@ impl BuddyArena {
 pub struct BuddyArenaBuilder {
     total_size: NonZeroUsize,
     min_block_size: NonZeroUsize,
-    alignment: usize,
-    auto_spill: bool,
-    init_policy: crate::arena::InitPolicy,
-    page_size: crate::arena::PageSize,
+    config: crate::arena::BuildConfig,
 }
 
 impl BuddyArenaBuilder {
@@ -247,14 +238,14 @@ impl BuddyArenaBuilder {
     /// Must be a power of 2. The minimum block size must be a multiple of
     /// the chosen alignment.
     pub fn alignment(mut self, n: usize) -> Self {
-        self.alignment = n;
+        self.config.alignment = n;
         self
     }
 
     /// Enable auto-spill: overflow writes copy to heap after releasing
     /// the buddy block back to the arena.
     pub fn auto_spill(mut self) -> Self {
-        self.auto_spill = true;
+        self.config.auto_spill = true;
         self
     }
 
@@ -265,7 +256,7 @@ impl BuddyArenaBuilder {
     /// [`BuddyArena::allocate()`] writes zeroes across the block before
     /// returning the buffer.
     pub fn init_policy(mut self, policy: crate::arena::InitPolicy) -> Self {
-        self.init_policy = policy;
+        self.config.init_policy = policy;
         self
     }
 
@@ -280,13 +271,13 @@ impl BuddyArenaBuilder {
     /// [`build_unfaulted()`](Self::build_unfaulted) to defer the walk
     /// (e.g. for NUMA placement).
     pub fn page_size(mut self, policy: crate::arena::PageSize) -> Self {
-        self.page_size = policy;
+        self.config.page_size = policy;
         self
     }
 
     /// Build the buddy arena, prefaulting pages if a page size is configured.
     pub fn build(self) -> Result<BuddyArena, BuildError> {
-        let page_size = self.page_size.resolve();
+        let page_size = self.config.page_size.resolve();
         let arena = self.build_raw(
             #[cfg(feature = "async-alloc")]
             None,
@@ -303,7 +294,7 @@ impl BuddyArenaBuilder {
     /// See [`Unfaulted`](crate::Unfaulted) for the three consumption
     /// paths: explicit fault, demand-fault, or direct allocate.
     pub fn build_unfaulted(self) -> Result<crate::arena::Unfaulted<BuddyArena>, BuildError> {
-        let page_size = self.page_size.resolve();
+        let page_size = self.config.page_size.resolve();
         let arena = self.build_raw(
             #[cfg(feature = "async-alloc")]
             None,
@@ -321,17 +312,15 @@ impl BuddyArenaBuilder {
         self,
         #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::BuddyWakeHandle>,
     ) -> Result<BuddyArena, BuildError> {
-        if !self.alignment.is_power_of_two() {
-            return Err(BuildError::InvalidAlignment);
-        }
+        self.config.validate_alignment()?;
 
         let total_size = self.total_size.get();
         let min_block_size = self.min_block_size.get();
 
-        let max_order = buddy_max_order(total_size, min_block_size, self.alignment)
+        let max_order = buddy_max_order(total_size, min_block_size, self.config.alignment)
             .ok_or(BuildError::InvalidGeometry)?;
 
-        let layout = Layout::from_size_align(total_size, self.alignment)
+        let layout = Layout::from_size_align(total_size, self.config.alignment)
             .map_err(|_| BuildError::SizeOverflow)?;
 
         // SAFETY: layout has non-zero size and valid alignment.
@@ -345,8 +334,6 @@ impl BuddyArenaBuilder {
             let block_count = blocks_at_order(max_order, order);
             free_bitmaps.push(AtomicBitmap::new_empty(block_count));
         }
-        // The builder starts with all per-order bitmaps empty, then publishes
-        // the single max-order block as free initial state.
         free_bitmaps[max_order].free(0);
 
         let inner = BuddyArenaInner {
@@ -357,8 +344,8 @@ impl BuddyArenaBuilder {
             max_order,
             free_bitmaps: free_bitmaps.into_boxed_slice(),
             nonempty_orders: AtomicUsize::new(1usize << max_order),
-            auto_spill: self.auto_spill,
-            init_policy: self.init_policy,
+            auto_spill: self.config.auto_spill,
+            init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
             #[cfg(feature = "async-alloc")]
             wake_handle: waker,
@@ -377,7 +364,7 @@ impl BuddyArenaBuilder {
         let max_order = buddy_max_order(
             self.total_size.get(),
             self.min_block_size.get(),
-            self.alignment,
+            self.config.alignment,
         )
         .ok_or(BuildError::InvalidGeometry)?;
         self.build_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
@@ -391,7 +378,7 @@ impl BuddyArenaBuilder {
     where
         W: crate::async_alloc::BuddyWaiter,
     {
-        let page_size = self.page_size.resolve();
+        let page_size = self.config.page_size.resolve();
         let waiters = std::sync::Arc::new(waiters);
         let arena = self.build_raw(Some(crate::async_alloc::BuddyWakeHandle::new(
             std::sync::Arc::clone(&waiters),
