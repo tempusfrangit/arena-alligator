@@ -151,6 +151,35 @@ impl Unfaulted<FixedArena> {
     }
 }
 
+/// Shared builder configuration for both arena types.
+pub(crate) struct BuildConfig {
+    pub(crate) alignment: usize,
+    pub(crate) auto_spill: bool,
+    pub(crate) init_policy: InitPolicy,
+    pub(crate) page_size: PageSize,
+}
+
+impl BuildConfig {
+    pub(crate) fn new() -> Self {
+        Self {
+            alignment: 1,
+            auto_spill: false,
+            init_policy: InitPolicy::default(),
+            #[cfg(all(unix, feature = "libc"))]
+            page_size: PageSize::Auto,
+            #[cfg(not(all(unix, feature = "libc")))]
+            page_size: PageSize::Unknown,
+        }
+    }
+
+    pub(crate) fn validate_alignment(&self) -> Result<(), BuildError> {
+        if !self.alignment.is_power_of_two() {
+            return Err(BuildError::InvalidAlignment);
+        }
+        Ok(())
+    }
+}
+
 pub(crate) struct ArenaInner {
     pub(crate) ptr: *mut u8,
     layout: Layout,
@@ -207,13 +236,7 @@ impl FixedArena {
         FixedArenaBuilder {
             slot_count,
             slot_capacity,
-            alignment: 1,
-            auto_spill: false,
-            init_policy: InitPolicy::default(),
-            #[cfg(all(unix, feature = "libc"))]
-            page_size: PageSize::Auto,
-            #[cfg(not(all(unix, feature = "libc")))]
-            page_size: PageSize::Unknown,
+            config: BuildConfig::new(),
         }
     }
 
@@ -272,10 +295,7 @@ impl FixedArena {
 pub struct FixedArenaBuilder {
     slot_count: NonZeroUsize,
     slot_capacity: NonZeroUsize,
-    alignment: usize,
-    auto_spill: bool,
-    init_policy: InitPolicy,
-    page_size: PageSize,
+    config: BuildConfig,
 }
 
 impl FixedArenaBuilder {
@@ -284,13 +304,13 @@ impl FixedArenaBuilder {
     /// Must be a power of 2. Default: 1 (no alignment constraint).
     /// Use 4096 for O_DIRECT / DMA compatibility.
     pub fn alignment(mut self, n: usize) -> Self {
-        self.alignment = n;
+        self.config.alignment = n;
         self
     }
 
     /// Enable auto-spill: overflow writes copy to heap, freeing the arena slot.
     pub fn auto_spill(mut self) -> Self {
-        self.auto_spill = true;
+        self.config.auto_spill = true;
         self
     }
 
@@ -300,7 +320,7 @@ impl FixedArenaBuilder {
     /// every call to [`FixedArena::allocate()`] writes zeroes across the
     /// slot before returning the buffer.
     pub fn init_policy(mut self, policy: InitPolicy) -> Self {
-        self.init_policy = policy;
+        self.config.init_policy = policy;
         self
     }
 
@@ -313,14 +333,17 @@ impl FixedArenaBuilder {
     /// touches every page at build time. Use [`build_unfaulted()`](Self::build_unfaulted)
     /// to defer the walk (e.g. for NUMA placement).
     pub fn page_size(mut self, policy: PageSize) -> Self {
-        self.page_size = policy;
+        self.config.page_size = policy;
         self
     }
 
     /// Build the arena, prefaulting pages if a page size is configured.
     pub fn build(self) -> Result<FixedArena, BuildError> {
-        let page_size = self.page_size.resolve();
-        let arena = self.build_inner()?;
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_inner(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
         if let Some(ps) = page_size {
             prefault_region(
                 arena.inner.ptr,
@@ -336,8 +359,11 @@ impl FixedArenaBuilder {
     /// See [`Unfaulted`] for the three consumption paths: explicit fault,
     /// demand-fault, or direct allocate.
     pub fn build_unfaulted(self) -> Result<Unfaulted<FixedArena>, BuildError> {
-        let page_size = self.page_size.resolve();
-        let arena = self.build_inner()?;
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_inner(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
         let total_size = arena.inner.slot_count * arena.inner.slot_capacity;
         Ok(Unfaulted::new(
             arena.inner.ptr,
@@ -347,22 +373,23 @@ impl FixedArenaBuilder {
         ))
     }
 
-    fn build_inner(self) -> Result<FixedArena, BuildError> {
-        if !self.alignment.is_power_of_two() {
-            return Err(BuildError::InvalidAlignment);
-        }
+    fn build_inner(
+        self,
+        #[cfg(feature = "async-alloc")] wake_handle: Option<crate::async_alloc::WakeHandle>,
+    ) -> Result<FixedArena, BuildError> {
+        self.config.validate_alignment()?;
 
         let slot_count = self.slot_count.get();
         let slot_capacity = self.slot_capacity.get();
 
         let aligned_capacity =
-            align_up(slot_capacity, self.alignment).ok_or(BuildError::SizeOverflow)?;
+            align_up(slot_capacity, self.config.alignment).ok_or(BuildError::SizeOverflow)?;
 
         let total_size = slot_count
             .checked_mul(aligned_capacity)
             .ok_or(BuildError::SizeOverflow)?;
 
-        let layout = Layout::from_size_align(total_size, self.alignment)
+        let layout = Layout::from_size_align(total_size, self.config.alignment)
             .map_err(|_| BuildError::SizeOverflow)?;
 
         // SAFETY: layout has non-zero size (slot_count > 0, aligned_capacity > 0).
@@ -377,11 +404,11 @@ impl FixedArenaBuilder {
             slot_capacity: aligned_capacity,
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
-            auto_spill: self.auto_spill,
-            init_policy: self.init_policy,
+            auto_spill: self.config.auto_spill,
+            init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
             #[cfg(feature = "async-alloc")]
-            wake_handle: None,
+            wake_handle,
         };
 
         Ok(FixedArena {
@@ -405,57 +432,21 @@ impl FixedArenaBuilder {
     where
         W: crate::async_alloc::Waiter,
     {
-        let page_size = self.page_size.resolve();
-
-        if !self.alignment.is_power_of_two() {
-            return Err(BuildError::InvalidAlignment);
-        }
-
-        let slot_count = self.slot_count.get();
-        let slot_capacity = self.slot_capacity.get();
-
-        let aligned_capacity =
-            align_up(slot_capacity, self.alignment).ok_or(BuildError::SizeOverflow)?;
-
-        let total_size = slot_count
-            .checked_mul(aligned_capacity)
-            .ok_or(BuildError::SizeOverflow)?;
-
-        let layout = Layout::from_size_align(total_size, self.alignment)
-            .map_err(|_| BuildError::SizeOverflow)?;
-
-        // SAFETY: layout has non-zero size (slot_count > 0, aligned_capacity > 0).
-        let ptr = unsafe { std::alloc::alloc(layout) };
-        if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
-        }
+        let page_size = self.config.page_size.resolve();
+        let waiters = std::sync::Arc::new(waiters);
+        let arena = self.build_inner(Some(crate::async_alloc::WakeHandle::new(
+            std::sync::Arc::clone(&waiters),
+        )))?;
 
         if let Some(ps) = page_size {
-            prefault_region(ptr, total_size, ps);
+            prefault_region(
+                arena.inner.ptr,
+                arena.inner.slot_count * arena.inner.slot_capacity,
+                ps,
+            );
         }
 
-        let waiters = std::sync::Arc::new(waiters);
-
-        let inner = ArenaInner {
-            ptr,
-            layout,
-            slot_capacity: aligned_capacity,
-            slot_count,
-            bitmap: AtomicBitmap::new(slot_count),
-            auto_spill: self.auto_spill,
-            init_policy: self.init_policy,
-            metrics: MetricsState::new(total_size),
-            wake_handle: Some(crate::async_alloc::WakeHandle::new(std::sync::Arc::clone(
-                &waiters,
-            ))),
-        };
-
-        Ok(crate::async_alloc::AsyncFixedArena::new(
-            FixedArena {
-                inner: Arc::new(inner),
-            },
-            waiters,
-        ))
+        Ok(crate::async_alloc::AsyncFixedArena::new(arena, waiters))
     }
 }
 
