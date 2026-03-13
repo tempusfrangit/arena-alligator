@@ -859,7 +859,9 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_async_basic() {
-        let arena = FixedArena::builder(nz(1), nz(32)).build_async().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
+            .build_async()
+            .unwrap();
         let mut buf = arena.allocate_async().await;
         buf.put_slice(b"data");
         let bytes = buf.freeze();
@@ -869,7 +871,11 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_async_waits_then_succeeds() {
-        let arena = Arc::new(FixedArena::builder(nz(1), nz(32)).build_async().unwrap());
+        let arena = Arc::new(
+            FixedArena::with_slot_capacity(nz(1), nz(32))
+                .build_async()
+                .unwrap(),
+        );
         let mut buf = arena.allocate_async().await;
         buf.put_slice(b"blocking");
         let bytes = buf.freeze();
@@ -889,7 +895,9 @@ mod tests {
 
     #[tokio::test]
     async fn sync_allocate_still_fast_fails() {
-        let arena = FixedArena::builder(nz(1), nz(32)).build_async().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
+            .build_async()
+            .unwrap();
         let _buf = arena.allocate().unwrap();
         let err = arena.allocate().unwrap_err();
         assert_eq!(err, crate::AllocError::ArenaFull);
@@ -897,7 +905,11 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_waiters_all_served() {
-        let arena = Arc::new(FixedArena::builder(nz(2), nz(32)).build_async().unwrap());
+        let arena = Arc::new(
+            FixedArena::with_slot_capacity(nz(2), nz(32))
+                .build_async()
+                .unwrap(),
+        );
         let buf1 = arena.allocate().unwrap();
         let buf2 = arena.allocate().unwrap();
         let a1 = Arc::clone(&arena);
@@ -917,14 +929,20 @@ mod tests {
 
     #[tokio::test]
     async fn deref_exposes_sync_methods() {
-        let arena = FixedArena::builder(nz(4), nz(64)).build_async().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(4), nz(64))
+            .build_async()
+            .unwrap();
         assert_eq!(arena.slot_count(), 4);
         assert_eq!(arena.slot_capacity(), 64);
     }
 
     #[tokio::test]
     async fn fixed_cancellation_no_leak() {
-        let arena = Arc::new(FixedArena::builder(nz(1), nz(32)).build_async().unwrap());
+        let arena = Arc::new(
+            FixedArena::with_slot_capacity(nz(1), nz(32))
+                .build_async()
+                .unwrap(),
+        );
         let buf = arena.allocate().unwrap();
 
         let arena2 = Arc::clone(&arena);
@@ -1037,7 +1055,7 @@ mod tests {
     async fn fixed_custom_waiter_supported() {
         let waiters = CountingWaiters::new(1);
         let arena = Arc::new(
-            FixedArena::builder(nz(1), nz(32))
+            FixedArena::with_slot_capacity(nz(1), nz(32))
                 .build_async_with(waiters.clone())
                 .unwrap(),
         );

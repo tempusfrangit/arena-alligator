@@ -9,7 +9,7 @@ use bytes::BufMut;
 #[tokio::main]
 async fn main() {
     let arena = Arc::new(
-        FixedArena::builder(
+        FixedArena::with_slot_capacity(
             NonZeroUsize::new(2).unwrap(),
             NonZeroUsize::new(256).unwrap(),
         )

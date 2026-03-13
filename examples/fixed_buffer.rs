@@ -6,7 +6,7 @@ use arena_alligator::FixedArena;
 use bytes::BufMut;
 
 fn main() {
-    let arena = FixedArena::builder(
+    let arena = FixedArena::with_slot_capacity(
         NonZeroUsize::new(64).unwrap(),
         NonZeroUsize::new(4096).unwrap(),
     )

@@ -36,7 +36,7 @@ fn contention_levels() -> Vec<usize> {
 
 fn fixed_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("fixed_roundtrip");
-    let arena = FixedArena::builder(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
+    let arena = FixedArena::with_slot_capacity(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
         .build()
         .unwrap();
 
@@ -91,9 +91,10 @@ fn fixed_contention(c: &mut Criterion) {
             );
             group.throughput(Throughput::Elements(threads as u64));
             group.bench_with_input(id, &threads, |b, &threads| {
-                let arena = FixedArena::builder(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
-                    .build()
-                    .unwrap();
+                let arena =
+                    FixedArena::with_slot_capacity(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
+                        .build()
+                        .unwrap();
                 let held = hold_fixed_capacity(&arena, hold_pct);
 
                 b.iter_custom(|iters| {
@@ -140,7 +141,7 @@ fn buddy_contention(c: &mut Criterion) {
 
 fn fixed_auto_spill(c: &mut Criterion) {
     let mut group = c.benchmark_group("fixed_auto_spill");
-    let arena = FixedArena::builder(nz(FIXED_SLOT_COUNT), nz(1024))
+    let arena = FixedArena::with_slot_capacity(nz(FIXED_SLOT_COUNT), nz(1024))
         .auto_spill()
         .build()
         .unwrap();

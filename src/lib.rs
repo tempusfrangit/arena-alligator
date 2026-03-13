@@ -22,10 +22,12 @@
 //! use arena_alligator::FixedArena;
 //! use bytes::BufMut;
 //!
-//! let arena = FixedArena::builder(
+//! let arena = FixedArena::with_slot_capacity(
 //!     NonZeroUsize::new(1024).unwrap(),
 //!     NonZeroUsize::new(4096).unwrap(),
-//! ).build().unwrap();
+//! )
+//! .build()
+//! .unwrap();
 //!
 //! let mut buf = arena.allocate().unwrap();
 //! buf.put_slice(b"hello");

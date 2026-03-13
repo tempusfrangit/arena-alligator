@@ -230,12 +230,31 @@ impl fmt::Debug for FixedArena {
 }
 
 impl FixedArena {
-    /// Create a builder. Both parameters are `NonZeroUsize` — zero slots
-    /// or zero capacity are rejected at the type level.
-    pub fn builder(slot_count: NonZeroUsize, slot_capacity: NonZeroUsize) -> FixedArenaBuilder {
+    /// Create a builder with per-slot capacity in bytes.
+    pub fn with_slot_capacity(
+        slot_count: NonZeroUsize,
+        slot_capacity: NonZeroUsize,
+    ) -> FixedArenaBuilder {
         FixedArenaBuilder {
             slot_count,
             slot_capacity,
+            config: BuildConfig::new(),
+        }
+    }
+
+    /// Create a builder with total arena capacity in bytes.
+    ///
+    /// Per-slot capacity is derived as `ceil(total / slot_count)`, then
+    /// rounded up to alignment at build time.
+    pub fn with_arena_capacity(
+        slot_count: NonZeroUsize,
+        arena_capacity: NonZeroUsize,
+    ) -> FixedArenaBuilder {
+        let per_slot = arena_capacity.get().div_ceil(slot_count.get());
+        FixedArenaBuilder {
+            slot_count,
+            // per_slot >= 1 because arena_capacity >= 1 and slot_count >= 1
+            slot_capacity: NonZeroUsize::new(per_slot).unwrap(),
             config: BuildConfig::new(),
         }
     }
@@ -292,6 +311,9 @@ impl FixedArena {
 }
 
 /// Builder for [`FixedArena`].
+///
+/// Created via [`FixedArena::with_slot_capacity()`] or
+/// [`FixedArena::with_arena_capacity()`].
 pub struct FixedArenaBuilder {
     slot_count: NonZeroUsize,
     slot_capacity: NonZeroUsize,
@@ -336,7 +358,6 @@ impl FixedArenaBuilder {
         self.config.page_size = policy;
         self
     }
-
     /// Build the arena, prefaulting pages if a page size is configured.
     pub fn build(self) -> Result<FixedArena, BuildError> {
         let page_size = self.config.page_size.resolve();
@@ -466,14 +487,16 @@ mod tests {
 
     #[test]
     fn build_basic_arena() {
-        let arena = FixedArena::builder(nz(4), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(4), nz(64))
+            .build()
+            .unwrap();
         assert_eq!(arena.slot_count(), 4);
         assert_eq!(arena.slot_capacity(), 64);
     }
 
     #[test]
     fn build_invalid_alignment_fails() {
-        let err = FixedArena::builder(nz(4), nz(64))
+        let err = FixedArena::with_slot_capacity(nz(4), nz(64))
             .alignment(3)
             .build()
             .unwrap_err();
@@ -482,7 +505,7 @@ mod tests {
 
     #[test]
     fn build_zero_alignment_fails() {
-        let err = FixedArena::builder(nz(4), nz(64))
+        let err = FixedArena::with_slot_capacity(nz(4), nz(64))
             .alignment(0)
             .build()
             .unwrap_err();
@@ -491,7 +514,9 @@ mod tests {
 
     #[test]
     fn metrics_track_allocate_free_and_failure() {
-        let arena = FixedArena::builder(nz(1), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .build()
+            .unwrap();
 
         let initial = arena.metrics();
         assert_eq!(initial.bytes_reserved, 64);
@@ -516,7 +541,7 @@ mod tests {
 
     #[test]
     fn build_size_overflow_fails() {
-        let err = FixedArena::builder(nz(usize::MAX), nz(2))
+        let err = FixedArena::with_slot_capacity(nz(usize::MAX), nz(2))
             .build()
             .unwrap_err();
         assert_eq!(err, BuildError::SizeOverflow);
@@ -524,7 +549,7 @@ mod tests {
 
     #[test]
     fn alignment_rounding_overflow_fails() {
-        let err = FixedArena::builder(nz(1), nz(usize::MAX))
+        let err = FixedArena::with_slot_capacity(nz(1), nz(usize::MAX))
             .alignment(2)
             .build()
             .unwrap_err();
@@ -533,7 +558,7 @@ mod tests {
 
     #[test]
     fn alignment_rounds_capacity_up() {
-        let arena = FixedArena::builder(nz(2), nz(100))
+        let arena = FixedArena::with_slot_capacity(nz(2), nz(100))
             .alignment(64)
             .build()
             .unwrap();
@@ -542,7 +567,7 @@ mod tests {
 
     #[test]
     fn alignment_4096_rounds_up() {
-        let arena = FixedArena::builder(nz(4), nz(100))
+        let arena = FixedArena::with_slot_capacity(nz(4), nz(100))
             .alignment(4096)
             .build()
             .unwrap();
@@ -551,7 +576,7 @@ mod tests {
 
     #[test]
     fn prefault_disabled_builds() {
-        let arena = FixedArena::builder(nz(4), nz(64))
+        let arena = FixedArena::with_slot_capacity(nz(4), nz(64))
             .page_size(PageSize::Unknown)
             .build()
             .unwrap();
@@ -560,7 +585,7 @@ mod tests {
 
     #[test]
     fn prefault_explicit_page_size_builds() {
-        let arena = FixedArena::builder(nz(4), nz(4096))
+        let arena = FixedArena::with_slot_capacity(nz(4), nz(4096))
             .page_size(PageSize::Size(nz(4096)))
             .build()
             .unwrap();
@@ -570,7 +595,7 @@ mod tests {
     #[cfg(all(unix, feature = "libc"))]
     #[test]
     fn prefault_auto_builds() {
-        let arena = FixedArena::builder(nz(4), nz(4096))
+        let arena = FixedArena::with_slot_capacity(nz(4), nz(4096))
             .page_size(PageSize::Auto)
             .build()
             .unwrap();
@@ -579,7 +604,7 @@ mod tests {
 
     #[test]
     fn build_unfaulted_then_fault_pages() {
-        let faultable = FixedArena::builder(nz(4), nz(4096))
+        let faultable = FixedArena::with_slot_capacity(nz(4), nz(4096))
             .page_size(PageSize::Size(nz(4096)))
             .build_unfaulted()
             .unwrap();
@@ -590,7 +615,7 @@ mod tests {
 
     #[test]
     fn build_unfaulted_into_inner_skips_fault() {
-        let faultable = FixedArena::builder(nz(4), nz(64))
+        let faultable = FixedArena::with_slot_capacity(nz(4), nz(64))
             .page_size(PageSize::Unknown)
             .build_unfaulted()
             .unwrap();
@@ -601,7 +626,9 @@ mod tests {
 
     #[test]
     fn clone_shares_inner() {
-        let arena = FixedArena::builder(nz(2), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(2), nz(64))
+            .build()
+            .unwrap();
         let arena2 = arena.clone();
         assert_eq!(arena.slot_count(), arena2.slot_count());
         assert_eq!(arena.slot_capacity(), arena2.slot_capacity());
@@ -609,7 +636,9 @@ mod tests {
 
     #[test]
     fn allocate_and_drop() {
-        let arena = FixedArena::builder(nz(2), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(2), nz(64))
+            .build()
+            .unwrap();
 
         let buf1 = arena.allocate().unwrap();
         let buf2 = arena.allocate().unwrap();
@@ -622,7 +651,9 @@ mod tests {
 
     #[test]
     fn allocate_full_returns_arena_full() {
-        let arena = FixedArena::builder(nz(1), nz(32)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
+            .build()
+            .unwrap();
 
         let _buf = arena.allocate().unwrap();
         let err = arena.allocate().unwrap_err();
@@ -631,7 +662,9 @@ mod tests {
 
     #[test]
     fn drop_returns_slot() {
-        let arena = FixedArena::builder(nz(1), nz(32)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
+            .build()
+            .unwrap();
 
         let buf = arena.allocate().unwrap();
         drop(buf);
@@ -645,7 +678,7 @@ mod tests {
     fn init_policy_zero_fills_slot() {
         use bytes::BufMut;
 
-        let arena = FixedArena::builder(nz(1), nz(64))
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
             .init_policy(InitPolicy::Zero)
             .page_size(PageSize::Unknown)
             .build()
@@ -666,5 +699,31 @@ mod tests {
     #[test]
     fn init_policy_default_is_uninit() {
         assert_eq!(InitPolicy::default(), InitPolicy::Uninit);
+    }
+
+    #[test]
+    fn builder_with_arena_capacity() {
+        let arena = FixedArena::with_arena_capacity(nz(4), nz(256))
+            .build()
+            .unwrap();
+        assert_eq!(arena.slot_count(), 4);
+        assert_eq!(arena.slot_capacity(), 64);
+    }
+
+    #[test]
+    fn builder_arena_capacity_rounds_up() {
+        let arena = FixedArena::with_arena_capacity(nz(3), nz(1000))
+            .build()
+            .unwrap();
+        assert_eq!(arena.slot_capacity(), 334);
+    }
+
+    #[test]
+    fn builder_arena_capacity_with_alignment() {
+        let arena = FixedArena::with_arena_capacity(nz(3), nz(1000))
+            .alignment(64)
+            .build()
+            .unwrap();
+        assert_eq!(arena.slot_capacity(), 384);
     }
 }
