@@ -234,7 +234,7 @@ Release notes for `0.3.0`, `0.4.0`, `0.5.x`, and `0.6.0` are in [CHANGELOG.md](C
 
 ## Status
 
-Pre-1.0. API changes should ship with an adapter rather than force a blind rewrite.
+As of `0.6.0`, the API is stabilized. Any future API changes will ship with adapters rather than break the contract directly.
 
 ## Contributing
 
