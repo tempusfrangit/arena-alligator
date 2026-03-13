@@ -146,6 +146,22 @@ depends = ["_doctor:base"]
 run = 'ARENA_BENCH_EXTREME=1 cargo bench --bench allocator'
 
 # -----------------------------------------------------------------------------
+# Examples
+# -----------------------------------------------------------------------------
+
+[tasks.examples]
+description = "Build and run all examples"
+depends = ["_doctor:base"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+for ex in fixed_buffer buddy_buffer spill_buffer async_alloc; do
+  echo "==> $ex"
+  cargo run --all-features --example "$ex"
+done
+'''
+
+# -----------------------------------------------------------------------------
 # Deny
 # -----------------------------------------------------------------------------
 
