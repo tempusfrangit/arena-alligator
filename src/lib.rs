@@ -57,6 +57,7 @@ mod bitmap;
 mod buddy;
 mod buffer;
 mod error;
+mod geometry;
 mod handle;
 mod metrics;
 mod sync;
@@ -68,6 +69,7 @@ pub use arena::{FixedArena, FixedArenaBuilder, InitPolicy, PageSize, Unfaulted};
 pub use buddy::{BuddyArena, BuddyArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
+pub use geometry::BuddyGeometry;
 pub use metrics::{BuddyArenaMetrics, FixedArenaMetrics};
 
 #[cfg(feature = "async-alloc")]
