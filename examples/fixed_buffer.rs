@@ -5,20 +5,19 @@ use std::num::NonZeroUsize;
 use arena_alligator::FixedArena;
 use bytes::BufMut;
 
-fn main() {
-    let arena = FixedArena::with_slot_capacity(
-        NonZeroUsize::new(64).unwrap(),
-        NonZeroUsize::new(4096).unwrap(),
-    )
-    .build()
-    .unwrap();
+fn nz(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).unwrap()
+}
 
-    // Buffer implements BufMut.
+fn main() {
+    let arena = FixedArena::with_slot_capacity(nz(64), nz(4096))
+        .build()
+        .unwrap();
+
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"GET /index.html HTTP/1.1\r\n");
     buf.put_slice(b"Host: example.com\r\n\r\n");
 
-    // Freeze without copying on the common path.
     let bytes = buf.freeze();
 
     let handle = std::thread::spawn(move || {

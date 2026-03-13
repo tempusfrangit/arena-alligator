@@ -5,14 +5,15 @@ use std::num::NonZeroUsize;
 use arena_alligator::FixedArena;
 use bytes::BufMut;
 
+fn nz(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).unwrap()
+}
+
 fn main() {
-    let arena = FixedArena::with_slot_capacity(
-        NonZeroUsize::new(32).unwrap(),
-        NonZeroUsize::new(1024).unwrap(),
-    )
-    .auto_spill()
-    .build()
-    .unwrap();
+    let arena = FixedArena::with_slot_capacity(nz(32), nz(1024))
+        .auto_spill()
+        .build()
+        .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(&[0xAA; 512]);

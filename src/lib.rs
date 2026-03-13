@@ -26,8 +26,8 @@
 //!     NonZeroUsize::new(1024).unwrap(),
 //!     NonZeroUsize::new(4096).unwrap(),
 //! )
-//! .build()
-//! .unwrap();
+//!     .build()
+//!     .unwrap();
 //!
 //! let mut buf = arena.allocate().unwrap();
 //! buf.put_slice(b"hello");
@@ -51,7 +51,7 @@
 //! # Async allocation
 //!
 //! With the `async-alloc` feature, [`AsyncFixedArena`] and [`AsyncBuddyArena`]
-//! provide `allocate_async()` which parks until capacity is available.
+//! provide `allocate_async()` which waits until capacity is available.
 
 mod allocation;
 mod arena;
