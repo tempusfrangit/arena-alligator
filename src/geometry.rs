@@ -23,6 +23,19 @@ impl BuddyGeometry {
     /// - `min_block_size` is not a power of two
     /// - `total_size` is not a power-of-two multiple of `min_block_size`
     /// - `total_size < min_block_size`
+    ///
+    /// ```
+    /// use std::num::NonZeroUsize;
+    /// use arena_alligator::BuddyGeometry;
+    ///
+    /// let geo = BuddyGeometry::exact(
+    ///     NonZeroUsize::new(4096).unwrap(),
+    ///     NonZeroUsize::new(512).unwrap(),
+    /// ).unwrap();
+    /// assert_eq!(geo.total_size(), 4096);
+    /// assert_eq!(geo.min_block_size(), 512);
+    /// assert_eq!(geo.max_order(), 3); // 4096 / 512 = 8 = 2^3
+    /// ```
     pub fn exact(
         total_size: NonZeroUsize,
         min_block_size: NonZeroUsize,
@@ -48,6 +61,22 @@ impl BuddyGeometry {
     /// - `total_size` rounds up to next power-of-two multiple of min_block_size
     ///
     /// Returns `Err(BuildError::SizeOverflow)` if snapped values overflow `usize`.
+    ///
+    /// Buffers allocated from arenas using `nearest` geometry report the
+    /// requested capacity, not the full block size.
+    ///
+    /// ```
+    /// use std::num::NonZeroUsize;
+    /// use arena_alligator::BuddyGeometry;
+    ///
+    /// // 6000 snaps up to 8192, 768 snaps up to 1024
+    /// let geo = BuddyGeometry::nearest(
+    ///     NonZeroUsize::new(6000).unwrap(),
+    ///     NonZeroUsize::new(768).unwrap(),
+    /// ).unwrap();
+    /// assert_eq!(geo.total_size(), 8192);
+    /// assert_eq!(geo.min_block_size(), 1024);
+    /// ```
     pub fn nearest(
         total_size: NonZeroUsize,
         min_block_size: NonZeroUsize,

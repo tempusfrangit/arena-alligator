@@ -71,13 +71,18 @@ run = 'cargo fmt'
 description = "Run all linting tasks"
 depends = ["_doctor:base"]
 run = [
-    { tasks = ["clippy", "format", "deny:check"] },
+    { tasks = ["clippy", "format", "doc", "deny:check"] },
 ]
 
 [tasks.clippy]
 description = "Run clippy with warnings as errors"
 depends = ["_doctor:base"]
 run = 'cargo clippy --all-targets --all-features -- -D warnings'
+
+[tasks.doc]
+description = "Check docs build with no warnings"
+depends = ["_doctor:base"]
+run = 'RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps'
 
 [tasks."clippy:fix"]
 description = "Run clippy in fix mode"

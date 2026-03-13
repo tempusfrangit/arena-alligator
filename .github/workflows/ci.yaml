@@ -89,6 +89,17 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: RUSTFLAGS="--cfg loom" cargo test --lib --features async-alloc loom -- --nocapture
 
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
+
   examples:
     name: Examples
     runs-on: ubuntu-latest
@@ -128,6 +139,7 @@ jobs:
       - tests
       - miri
       - loom
+      - docs
       - examples
       - msrv
     steps:
@@ -140,6 +152,7 @@ jobs:
             "${{ needs.tests.result }}"
             "${{ needs.miri.result }}"
             "${{ needs.loom.result }}"
+            "${{ needs.docs.result }}"
             "${{ needs.examples.result }}"
             "${{ needs.msrv.result }}"
           )

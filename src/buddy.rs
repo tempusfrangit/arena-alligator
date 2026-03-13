@@ -61,6 +61,23 @@ impl fmt::Debug for BuddyArena {
 
 impl BuddyArena {
     /// Create a builder for a buddy arena.
+    ///
+    /// ```
+    /// use std::num::NonZeroUsize;
+    /// use arena_alligator::{BuddyArena, BuddyGeometry};
+    /// use bytes::BufMut;
+    ///
+    /// let geo = BuddyGeometry::exact(
+    ///     NonZeroUsize::new(1024 * 1024).unwrap(),
+    ///     NonZeroUsize::new(256).unwrap(),
+    /// ).unwrap();
+    /// let arena = BuddyArena::builder(geo).build().unwrap();
+    ///
+    /// let mut buf = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
+    /// buf.put_slice(b"hello buddy");
+    /// let bytes = buf.freeze();
+    /// assert_eq!(&bytes[..], b"hello buddy");
+    /// ```
     pub fn builder(geometry: crate::geometry::BuddyGeometry) -> BuddyArenaBuilder {
         BuddyArenaBuilder {
             geometry,

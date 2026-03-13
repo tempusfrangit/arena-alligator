@@ -246,6 +246,18 @@ impl FixedArena {
     ///
     /// Per-slot capacity is derived as `ceil(total / slot_count)`, then
     /// rounded up to alignment at build time.
+    ///
+    /// ```
+    /// use std::num::NonZeroUsize;
+    /// use arena_alligator::FixedArena;
+    ///
+    /// let arena = FixedArena::with_arena_capacity(
+    ///     NonZeroUsize::new(4).unwrap(),
+    ///     NonZeroUsize::new(1000).unwrap(),
+    /// ).build().unwrap();
+    /// assert_eq!(arena.slot_count(), 4);
+    /// assert_eq!(arena.slot_capacity(), 250); // ceil(1000 / 4)
+    /// ```
     pub fn with_arena_capacity(
         slot_count: NonZeroUsize,
         arena_capacity: NonZeroUsize,

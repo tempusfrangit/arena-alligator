@@ -95,6 +95,31 @@ Use `metrics()` on `FixedArena` and `BuddyArena` to snapshot allocator state. Fi
 
 In load tests, watch `spill_count` and `largest_free_block` over time to catch pressure and fragmentation early.
 
+## Owned mutable bytes
+
+If you need to keep a frozen payload but move back to mutable heap storage, use `BytesExt::into_owned()`:
+
+```rust
+use std::num::NonZeroUsize;
+use arena_alligator::{FixedArena, BytesExt};
+use bytes::BufMut;
+
+let arena = FixedArena::with_slot_capacity(
+    NonZeroUsize::new(4).unwrap(),
+    NonZeroUsize::new(64).unwrap(),
+).build()?;
+
+let mut buf = arena.allocate()?;
+buf.put_slice(b"hello");
+let frozen = buf.freeze();
+
+let mut owned = frozen.into_owned();
+// Arena slot is freed; owned is heap-backed and mutable
+owned.put_slice(b" world");
+assert_eq!(&owned[..], b"hello world");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## Examples
 
 If you're new to the crate, run `fixed_buffer` first, then `buddy_buffer` for variable-size behavior.

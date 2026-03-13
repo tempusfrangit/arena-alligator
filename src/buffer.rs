@@ -13,7 +13,7 @@ use crate::sync::Arc;
 
 /// A writable buffer backed by arena memory.
 ///
-/// Created by [`FixedArena::allocate()`]. Write data via `BufMut` trait methods,
+/// Created by [`FixedArena::allocate()`](crate::FixedArena::allocate). Write data via `BufMut` trait methods,
 /// then call [`freeze()`](Buffer::freeze) to produce immutable `Bytes`.
 ///
 /// Dropping without freezing returns the slot to the arena.
@@ -132,6 +132,27 @@ impl Buffer {
     ///
     /// If the buffer has spilled to the heap, returns heap-backed `Bytes`
     /// (the arena slot was already freed during spill).
+    ///
+    /// ```
+    /// use std::num::NonZeroUsize;
+    /// use arena_alligator::FixedArena;
+    /// use bytes::BufMut;
+    ///
+    /// let arena = FixedArena::with_slot_capacity(
+    ///     NonZeroUsize::new(1).unwrap(),
+    ///     NonZeroUsize::new(64).unwrap(),
+    /// ).build().unwrap();
+    ///
+    /// let mut buf = arena.allocate().unwrap();
+    /// buf.put_slice(b"hello");
+    /// let bytes = buf.freeze();
+    /// assert_eq!(&bytes[..], b"hello");
+    ///
+    /// // Slot is pinned until bytes is dropped
+    /// assert!(arena.allocate().is_err());
+    /// drop(bytes);
+    /// assert!(arena.allocate().is_ok());
+    /// ```
     pub fn freeze(mut self) -> Bytes {
         if let Some(spilled) = self.spilled.take() {
             return spilled.freeze();
