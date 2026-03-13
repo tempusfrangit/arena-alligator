@@ -89,6 +89,21 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: RUSTFLAGS="--cfg loom" cargo test --lib --features async-alloc loom -- --nocapture
 
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: |
+          for ex in fixed_buffer buddy_buffer spill_buffer async_alloc; do
+            echo "==> $ex"
+            cargo run --all-features --example "$ex"
+          done
+
   msrv:
     name: MSRV (1.88)
     runs-on: ubuntu-latest
@@ -113,6 +128,7 @@ jobs:
       - tests
       - miri
       - loom
+      - examples
       - msrv
     steps:
       - name: Check job results
@@ -124,6 +140,7 @@ jobs:
             "${{ needs.tests.result }}"
             "${{ needs.miri.result }}"
             "${{ needs.loom.result }}"
+            "${{ needs.examples.result }}"
             "${{ needs.msrv.result }}"
           )
           for r in "${results[@]}"; do
