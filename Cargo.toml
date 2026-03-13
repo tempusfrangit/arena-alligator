@@ -16,6 +16,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 criterion = "0.5"
+crossbeam-epoch = "0.9.18"
 loom = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
@@ -32,6 +33,10 @@ harness = false
 
 [[example]]
 name = "async_alloc"
+required-features = ["async-alloc"]
+
+[[example]]
+name = "treiber_waker"
 required-features = ["async-alloc"]
 
 [package.metadata.docs.rs]

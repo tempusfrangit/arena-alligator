@@ -160,7 +160,7 @@ depends = ["_doctor:base"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-for ex in fixed_buffer buddy_buffer spill_buffer async_alloc; do
+for ex in fixed_buffer buddy_buffer spill_buffer async_alloc treiber_waker; do
   echo "==> $ex"
   cargo run --all-features --example "$ex"
 done
