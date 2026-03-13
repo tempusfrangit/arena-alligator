@@ -122,7 +122,6 @@ impl BuddyGeometry {
     }
 
     /// Whether buffer capacity is capped to the requested size.
-    #[allow(dead_code)]
     pub(crate) fn cap_capacity(&self) -> bool {
         self.cap_capacity
     }

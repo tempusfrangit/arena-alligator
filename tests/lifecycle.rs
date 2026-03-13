@@ -1,4 +1,4 @@
-use arena_alligator::{AllocError, BuddyArena, FixedArena};
+use arena_alligator::{AllocError, BuddyArena, BuddyGeometry, FixedArena};
 use bytes::BufMut;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
@@ -243,7 +243,9 @@ fn mixed_freeze_and_abandon_all_slots_recover() {
 
 #[test]
 fn buddy_drop_without_freeze_returns_space() {
-    let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
+        .build()
+        .unwrap();
 
     let mut buf = arena.allocate(nz(700)).unwrap();
     buf.put_slice(b"buddy buffer");
@@ -265,7 +267,9 @@ fn buddy_drop_without_freeze_returns_space() {
 
 #[test]
 fn buddy_mixed_size_churn_recovers_full_arena() {
-    let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
+        .build()
+        .unwrap();
 
     let a = arena.allocate(nz(512)).unwrap();
     let b = arena.allocate(nz(1500)).unwrap();
@@ -293,7 +297,9 @@ fn buddy_mixed_size_churn_recovers_full_arena() {
 
 #[test]
 fn buddy_freeze_bytes_slice_drop_lifecycle() {
-    let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
+        .build()
+        .unwrap();
 
     let mut buf = arena.allocate(nz(700)).unwrap();
     buf.put_slice(b"hello buddy world");
@@ -328,7 +334,7 @@ fn buddy_freeze_bytes_slice_drop_lifecycle() {
 
 #[test]
 fn buddy_auto_spill_freeze_path() {
-    let arena = BuddyArena::builder(nz(4096), nz(512))
+    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
         .auto_spill()
         .build()
         .unwrap();
@@ -354,7 +360,7 @@ fn buddy_auto_spill_freeze_path() {
 
 #[test]
 fn buddy_auto_spill_drop_path() {
-    let arena = BuddyArena::builder(nz(4096), nz(512))
+    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
         .auto_spill()
         .build()
         .unwrap();

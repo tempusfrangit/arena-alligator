@@ -244,7 +244,7 @@ unsafe impl BufMut for Buffer {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use crate::{BuddyArena, FixedArena};
+    use crate::{BuddyArena, BuddyGeometry, FixedArena};
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
@@ -388,7 +388,7 @@ mod tests {
 
     #[test]
     fn buddy_auto_spill_on_overflow() {
-        let arena = BuddyArena::builder(nz(4096), nz(512))
+        let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
             .auto_spill()
             .build()
             .unwrap();
@@ -402,7 +402,7 @@ mod tests {
 
     #[test]
     fn buddy_auto_spill_freeze_produces_valid_bytes() {
-        let arena = BuddyArena::builder(nz(4096), nz(512))
+        let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
             .auto_spill()
             .build()
             .unwrap();
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn buddy_auto_spill_remaining_mut_is_usize_max() {
-        let arena = BuddyArena::builder(nz(4096), nz(512))
+        let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
             .auto_spill()
             .build()
             .unwrap();

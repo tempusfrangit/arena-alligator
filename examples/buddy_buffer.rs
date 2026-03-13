@@ -2,16 +2,16 @@
 
 use std::num::NonZeroUsize;
 
-use arena_alligator::BuddyArena;
+use arena_alligator::{BuddyArena, BuddyGeometry};
 use bytes::BufMut;
 
 fn main() {
-    let arena = BuddyArena::builder(
+    let geo = BuddyGeometry::exact(
         NonZeroUsize::new(1024 * 1024).unwrap(),
         NonZeroUsize::new(256).unwrap(),
     )
-    .build()
     .unwrap();
+    let arena = BuddyArena::builder(geo).build().unwrap();
 
     let mut small = arena.allocate(NonZeroUsize::new(100).unwrap()).unwrap();
     small.put_slice(b"small payload");

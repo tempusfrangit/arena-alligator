@@ -742,6 +742,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use crate::BuddyArena;
+    use crate::BuddyGeometry;
     use crate::FixedArena;
 
     use super::*;
@@ -1061,7 +1062,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_allocate_async_waits_then_succeeds() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1086,7 +1087,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_multiple_waiters_all_served() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1115,7 +1116,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_large_waiter_not_starved_by_small() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1163,7 +1164,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_large_request_unblocks_after_coalesce() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1192,7 +1193,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_cancellation_does_not_leak() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1212,7 +1213,7 @@ mod tests {
     async fn buddy_custom_waiter_supported() {
         let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async_with(waiters.clone())
                 .unwrap(),
         );
@@ -1237,7 +1238,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_multi_order_waiters_served_via_split() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1268,7 +1269,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_cancel_wake_interleaving_count_invariant() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(8192), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1321,7 +1322,7 @@ mod tests {
     async fn buddy_teardown_with_live_waiters() {
         for _ in 0..20 {
             let arena = Arc::new(
-                BuddyArena::builder(nz(4096), nz(512))
+                BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                     .build_async()
                     .unwrap(),
             );
@@ -1355,7 +1356,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_fairness_large_not_starved_by_repeated_small() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(8192), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1413,7 +1414,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_fairness_mixed_sizes_no_deadlock() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(8192), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
