@@ -3,13 +3,13 @@
 //! This example implements [`Waiter`] and [`WaitRegistration`] with a
 //! stack of parked wakers rather than the built-in `NotifyWaiters`.
 //!
-//! `crossbeam_epoch` handles node reclamation so the example can stay
-//! focused on the waiter contract instead of raw-pointer lifetime hazards.
+//! `crossbeam_epoch` handles node reclamation so the example concentrates on
+//! the waiter contract rather than raw-pointer lifetime management.
 //!
 //! A Treiber stack funnels park/wake traffic through a hot atomic on the
 //! stack head. Under real contention that CAS becomes a bottleneck, while
-//! `NotifyWaiters` spreads the work through `tokio::sync::Notify` and is the
-//! better choice in practice.
+//! `NotifyWaiters` spreads the work through `tokio::sync::Notify`. That is the
+//! preferred production path.
 
 use std::future::Future;
 use std::num::NonZeroUsize;
@@ -124,7 +124,7 @@ impl TreiberStack {
 impl Drop for TreiberStack {
     fn drop(&mut self) {
         // Drop runs after the last Arc<TreiberStack>, so no concurrent access
-        // remains and we can walk the list without pinning.
+        // remains and the list can be walked without pinning.
         unsafe {
             let guard = epoch::unprotected();
             let mut current = self.head.load(Ordering::Relaxed, guard);
@@ -173,7 +173,7 @@ impl Waiter for TreiberWaiter {
 // ---------------------------------------------------------------------------
 // TreiberRegistration
 //
-// All fields are Unpin, so Pin<&mut Self> can use get_mut().
+// All fields are Unpin, so Pin<&mut Self> uses get_mut().
 // ---------------------------------------------------------------------------
 
 struct TreiberRegistration {
@@ -262,7 +262,7 @@ async fn main() {
         .unwrap();
     let arena = Arc::new(arena);
 
-    // Fill both slots
+    // Fill both slots.
     let mut buf1 = arena.allocate_async().await;
     let mut buf2 = arena.allocate_async().await;
     buf1.put_slice(b"slot one");
@@ -270,7 +270,7 @@ async fn main() {
 
     let a = Arc::clone(&arena);
     let handle = tokio::spawn(async move {
-        // Parks until a slot frees up
+        // Park until a slot frees up.
         let mut buf = a.allocate_async().await;
         buf.put_slice(b"waited for this");
         let bytes = buf.freeze();

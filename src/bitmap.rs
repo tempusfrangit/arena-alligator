@@ -535,7 +535,7 @@ mod loom_tests {
         loom::model(|| {
             let bitmap = Arc::new(AtomicBitmap::new(2));
 
-            // Pre-allocate slot 0 so we can free it.
+            // Pre-allocate slot 0 so the free path can be exercised.
             let slot = bitmap.try_alloc().unwrap();
             assert_eq!(slot, 0);
 

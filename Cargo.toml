@@ -1,10 +1,10 @@
 [package]
 name = "arena-alligator"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
-description = "Lock-free arena allocator producing bytes::Bytes via from_owner"
+description = "Arena allocator for bytes::Bytes with a fixed-slot fast path and buddy mode"
 repository = "https://github.com/tempusfrangit/arena-alligator"
 documentation = "https://docs.rs/arena-alligator"
 

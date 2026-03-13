@@ -38,7 +38,7 @@ mise run clippy
 
 ## Benchmarks
 
-Benchmarks are optional for most PRs and should be run when allocator behavior, contention behavior, or performance-sensitive paths change.
+Benchmarks are not required for most PRs. Run them when allocator behavior, contention behavior, or performance-sensitive paths change.
 
 ```sh
 mise run bench

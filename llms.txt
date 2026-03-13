@@ -1,0 +1,83 @@
+# arena-alligator
+
+Repository: https://github.com/tempusfrangit/arena-alligator
+Crate: https://crates.io/crates/arena-alligator
+Docs: https://docs.rs/arena-alligator
+DeepWiki: https://deepwiki.com/tempusfrangit/arena-alligator
+Version: 0.6.0
+License: MIT
+Rust edition: 2024
+MSRV: 1.88
+
+Summary:
+arena-alligator is an arena allocator for building bytes::Bytes without copying the final payload.
+Write into a Buffer, call freeze(), and hand off Bytes backed by arena memory. The slot or block
+returns to the arena when the last clone or slice drops.
+
+Recommended path:
+Use FixedArena by default. It is the high-throughput path for workloads that fit one slot size, or
+a small set of predictable slot sizes across separate arenas. FixedArena uses uniform slots and a
+bitmap claim/release path.
+
+Variable-size path:
+Use BuddyArena when variable-size allocation is the requirement. BuddyArena rounds requests up to
+powers of two, splits larger blocks on demand, and coalesces neighbors on release. BuddyGeometry
+provides exact() and nearest() constructors for shaping the shared region.
+- exact(): strict validation, no adjustment
+- nearest(): snap total size and minimum block size up to a valid buddy geometry
+
+Core APIs:
+- FixedArena::with_slot_capacity(...)
+- FixedArena::with_arena_capacity(...)
+- BuddyArena::builder(BuddyGeometry::exact(...) or BuddyGeometry::nearest(...))
+- Buffer::freeze()
+- FixedArenaBuilder::auto_spill()
+- FixedArenaBuilder::init_policy(...) and BuddyArenaBuilder::init_policy(...)
+- BytesExt::into_owned()
+- AsyncFixedArena::allocate_async() and AsyncBuddyArena::allocate_async(...) with feature "async-alloc"
+- FixedArena::metrics() and BuddyArena::metrics()
+
+Memory and overflow behavior:
+- Default initialization policy is InitPolicy::Uninit. This matches Rust's common writable
+  uninitialized-capacity model: newly allocated arena bytes are not zero-filled automatically, and
+  only written bytes become visible in frozen Bytes.
+- InitPolicy::Zero is available for security-sensitive or data-hygiene-sensitive workloads that
+  require zero-on-allocate behavior.
+- Writing past capacity panics by default. That follows the contract of a fixed-size BufMut.
+- auto_spill() opts into different overflow behavior by copying written data to heap-backed storage
+  and releasing the arena allocation immediately.
+- BytesExt::into_owned() is the explicit post-freeze handoff from arena-backed Bytes to owned
+  mutable heap storage.
+
+NUMA and page faulting:
+- One arena per NUMA node is the baseline deployment pattern on multi-socket machines.
+- PageSize and build_unfaulted()/fault_pages() exist for explicit page-fault placement control.
+- docs/numa.md covers per-node arenas, pinning, and bounded cross-node fallback.
+
+Validation signals:
+- Standard unit tests and integration tests
+- Doctests on public API entry points
+- Example builds and runs in CI
+- Miri for undefined-behavior regression checks
+- Loom for concurrency/interleaving validation
+- Clippy, rustfmt, docs, and MSRV coverage in CI
+
+Development workflow:
+This repository uses mise as its task runner.
+- Install guide: https://mise.jdx.dev/installing-mise.html
+- Discover tasks: mise tasks --all
+- Full local validation: mise run ci
+- Full tests: mise run test
+- Examples: mise run examples
+- Benchmarks: mise run bench and mise run bench:extreme
+- llms.txt is maintained as a tracked static file in the repository.
+
+Release notes:
+- CHANGELOG.md covers 0.3.0, 0.4.0, 0.5.x, and 0.6.0
+
+Related files:
+- README.md
+- CHANGELOG.md
+- docs/numa.md
+- docs/benchmarks.md
+- CONTRIBUTING.md
