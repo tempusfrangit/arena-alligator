@@ -19,7 +19,6 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) free_bitmaps: Box<[AtomicBitmap]>,
     pub(crate) nonempty_orders: AtomicUsize,
     pub(crate) auto_spill: bool,
-    #[allow(dead_code)]
     pub(crate) cap_capacity: bool,
     pub(crate) init_policy: crate::arena::InitPolicy,
     pub(crate) metrics: MetricsState,
@@ -107,28 +106,34 @@ impl BuddyArena {
             })?;
 
         let (final_order, final_block_idx) = self.split_down(order, block_idx, target_order);
-        let capacity = self.block_size(final_order);
+        let block_size = self.block_size(final_order);
         let offset = self.block_offset(final_order, final_block_idx);
 
         match self.inner.init_policy {
             crate::arena::InitPolicy::Zero => {
-                // SAFETY: ptr+offset..ptr+offset+capacity is within the arena allocation
+                // SAFETY: ptr+offset..ptr+offset+block_size is within the arena allocation
                 // and exclusively owned by this block (bitmap claim enforced above).
                 unsafe {
-                    self.inner.ptr.add(offset).write_bytes(0, capacity);
+                    self.inner.ptr.add(offset).write_bytes(0, block_size);
                 }
             }
             crate::arena::InitPolicy::Uninit => {}
         }
 
-        self.inner.metrics.record_alloc_success(capacity);
+        self.inner.metrics.record_alloc_success(block_size);
+
+        let user_capacity = if self.inner.cap_capacity {
+            len.get().min(block_size)
+        } else {
+            block_size
+        };
 
         Ok(Buffer::new_buddy(
             Arc::clone(&self.inner),
             final_order,
             final_block_idx,
             offset,
-            capacity,
+            user_capacity,
         ))
     }
 
@@ -609,5 +614,50 @@ mod tests {
         let buf = arena.allocate(nz(512)).unwrap();
         let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 1024) };
         assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
+    }
+
+    #[test]
+    fn nearest_caps_capacity_to_requested() {
+        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let arena = BuddyArena::builder(geo).build().unwrap();
+        let buf = arena.allocate(nz(700)).unwrap();
+        assert_eq!(buf.capacity(), 700);
+    }
+
+    #[test]
+    fn exact_exposes_full_block_capacity() {
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
+        let buf = arena.allocate(nz(700)).unwrap();
+        assert_eq!(buf.capacity(), 1024);
+    }
+
+    #[test]
+    fn nearest_write_up_to_requested_then_full() {
+        use bytes::BufMut;
+        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let arena = BuddyArena::builder(geo).build().unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(&vec![0xAB; 700]);
+        assert_eq!(buf.len(), 700);
+        assert_eq!(buf.remaining_mut(), 0);
+    }
+
+    #[test]
+    fn exact_write_up_to_full_block() {
+        use bytes::BufMut;
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(&vec![0xAB; 1024]);
+        assert_eq!(buf.len(), 1024);
+        assert_eq!(buf.remaining_mut(), 0);
+    }
+
+    #[test]
+    fn nearest_metrics_reflect_block_size() {
+        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let arena = BuddyArena::builder(geo).build().unwrap();
+        let _buf = arena.allocate(nz(700)).unwrap();
+        let m = arena.metrics();
+        assert_eq!(m.bytes_live, 1024);
     }
 }
