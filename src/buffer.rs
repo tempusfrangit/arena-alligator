@@ -13,7 +13,7 @@ use crate::sync::Arc;
 
 /// A writable buffer backed by arena memory.
 ///
-/// Created by [`FixedArena::allocate()`]. Write data via `BufMut` trait methods,
+/// Created by [`FixedArena::allocate()`](crate::FixedArena::allocate). Write data via `BufMut` trait methods,
 /// then call [`freeze()`](Buffer::freeze) to produce immutable `Bytes`.
 ///
 /// Dropping without freezing returns the slot to the arena.

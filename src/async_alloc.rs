@@ -632,7 +632,7 @@ where
 
 /// Async-capable wrapper around [`FixedArena`].
 ///
-/// Created via [`FixedArenaBuilder::build_async()`]. Provides
+/// Created via [`FixedArenaBuilder::build_async()`](crate::FixedArenaBuilder::build_async). Provides
 /// [`allocate_async()`](AsyncFixedArena::allocate_async) which parks
 /// until a slot becomes available, while sync methods remain accessible
 /// through `Deref<Target = FixedArena>`.
@@ -680,7 +680,7 @@ impl<W> fmt::Debug for AsyncFixedArena<W> {
 
 /// Async-capable wrapper around [`BuddyArena`].
 ///
-/// Created via [`BuddyArenaBuilder::build_async()`]. Provides
+/// Created via [`BuddyArenaBuilder::build_async()`](crate::BuddyArenaBuilder::build_async). Provides
 /// [`allocate_async()`](AsyncBuddyArena::allocate_async) which parks
 /// until a large-enough block becomes available, while sync methods remain
 /// accessible through `Deref<Target = BuddyArena>`.
