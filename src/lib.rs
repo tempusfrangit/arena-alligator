@@ -48,6 +48,9 @@
 //! reference, so the arena memory stays pinned until every clone and slice is
 //! dropped.
 //!
+//! If you need mutable owned storage after `freeze()`, use
+//! [`BytesExt::into_owned()`]. It copies into a fresh `BytesMut`.
+//!
 //! # Async allocation
 //!
 //! With the `async-alloc` feature, [`AsyncFixedArena`] and [`AsyncBuddyArena`]
@@ -59,6 +62,7 @@ mod bitmap;
 mod buddy;
 mod buffer;
 mod error;
+mod ext;
 mod geometry;
 mod handle;
 mod metrics;
@@ -71,6 +75,7 @@ pub use arena::{FixedArena, FixedArenaBuilder, InitPolicy, PageSize, Unfaulted};
 pub use buddy::{BuddyArena, BuddyArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
+pub use ext::BytesExt;
 pub use geometry::BuddyGeometry;
 pub use metrics::{BuddyArenaMetrics, FixedArenaMetrics};
 
