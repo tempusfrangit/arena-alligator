@@ -216,8 +216,8 @@ impl Drop for Buffer {
     }
 }
 
-// SAFETY: we uphold BufMut's contract — advance_mut only called after
-// writing to chunk_mut, and we track len correctly.
+// SAFETY: BufMut's contract is upheld: advance_mut is called only after
+// writing to chunk_mut, and len tracking stays correct.
 unsafe impl BufMut for Buffer {
     fn remaining_mut(&self) -> usize {
         if let Some(buf) = &self.spilled {

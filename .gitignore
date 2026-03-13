@@ -16,6 +16,8 @@
 !/docs/benchmarks/criterion/
 !/docs/benchmarks/criterion/**
 !README.md
+!CHANGELOG.md
+!llms.txt
 !/LICENSE
 
 

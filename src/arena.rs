@@ -78,7 +78,7 @@ pub(crate) fn prefault_region(ptr: *mut u8, len: usize, page_size: usize) {
 
 /// Initialization policy applied to each buffer on allocate.
 ///
-/// Controls whether arena memory is initialized before being handed to the
+/// Controls whether arena memory is initialized before it is handed to the
 /// caller. The default ([`Uninit`](Self::Uninit)) leaves memory as-is for
 /// maximum throughput.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -95,12 +95,12 @@ pub enum InitPolicy {
 /// Created by [`FixedArenaBuilder::build_unfaulted()`] or
 /// [`BuddyArenaBuilder::build_unfaulted()`](crate::BuddyArenaBuilder::build_unfaulted).
 ///
-/// - [`fault_pages()`](Self::fault_pages) walks every page explicitly,
-///   then returns the arena. Use from a NUMA-pinned thread.
+/// - [`fault_pages()`](Self::fault_pages) walks every page explicitly, then
+///   returns the arena. Intended for use from a NUMA-pinned thread.
 /// - [`into_inner()`](Self::into_inner) skips the walk. The kernel
 ///   demand-faults pages on first access (first-touch policy).
-/// - [`allocate()`](Unfaulted::<FixedArena>::allocate) is a convenience
-///   for `into_inner()` followed by allocate.
+/// - [`allocate()`](Unfaulted::<FixedArena>::allocate) unwraps into the arena
+///   and allocates immediately.
 pub struct Unfaulted<A> {
     ptr: *mut u8,
     total_size: usize,

@@ -203,8 +203,8 @@ struct FixedOrderSlot {
 
 /// Per-order waiter system.
 ///
-/// For fixed arenas: single `Notify`-based FIFO (order 0 only).
-/// For buddy arenas: per-order mutex queues with CAS-arbitrated oneshot
+/// Fixed arenas use a single `Notify`-based FIFO (order 0 only).
+/// Buddy arenas use per-order mutex queues with CAS-arbitrated oneshot
 /// delivery and 4-factor scoring to prevent starvation.
 #[derive(Clone)]
 pub struct NotifyWaiters {
@@ -331,7 +331,7 @@ impl NotifyWaiters {
         let mut pops: usize = 0;
 
         // Deliver one wake per candidate order. A freed block at order N can
-        // serve waiters at multiple lower orders via splitting, so we wake
+        // serve waiters at multiple lower orders via splitting, so the wake
         // across orders rather than stopping at the first delivery.
         for order in candidates {
             let mut queue = self.inner.buddy_orders[order].queue.lock().unwrap();
@@ -356,7 +356,7 @@ impl NotifyWaiters {
                     self.update_head_timestamp(&queue, order);
                     drop(queue);
 
-                    // SAFETY: we won the CAS Live→Woken
+                    // SAFETY: this path won the CAS Live→Woken
                     let tx = unsafe { entry.take_tx() };
                     if let Some(tx) = tx
                         && tx.send(freed_order).is_ok()
@@ -473,7 +473,7 @@ impl Drop for NotifyRegistration {
         if self.registered {
             self.inner.fixed_slot.count.fetch_sub(1, Ordering::Release);
         }
-        // If we consumed a Notify permit (poll returned Ready) but were dropped
+        // If a Notify permit was consumed (poll returned Ready) but drop ran
         // before the allocation loop could retry, propagate the wake so the
         // next waiter isn't stalled. The OwnedNotified won't propagate on its
         // own because it was already polled to completion.
@@ -534,7 +534,7 @@ impl WaitRegistration for BuddyRegistration {
                     )
                     .is_ok()
             {
-                // SAFETY: we won the CAS Live→Revoked
+                // SAFETY: this path won the CAS Live→Revoked
                 let _tx = unsafe { entry.take_tx() };
                 this.waiters.buddy_orders[this.order]
                     .count
@@ -579,7 +579,7 @@ impl Drop for BuddyRegistration {
                 )
                 .is_ok()
         {
-            // SAFETY: we won the CAS Live→Revoked
+            // SAFETY: this path won the CAS Live→Revoked
             let _tx = unsafe { entry.take_tx() };
             self.waiters.buddy_orders[self.order]
                 .count
@@ -632,10 +632,11 @@ where
 
 /// Async-capable wrapper around [`FixedArena`].
 ///
-/// Created via [`FixedArenaBuilder::build_async()`](crate::FixedArenaBuilder::build_async). Provides
-/// [`allocate_async()`](AsyncFixedArena::allocate_async) which parks
-/// until a slot becomes available, while sync methods remain accessible
-/// through `Deref<Target = FixedArena>`.
+/// Created via
+/// [`FixedArenaBuilder::build_async()`](crate::FixedArenaBuilder::build_async).
+/// [`allocate_async()`](AsyncFixedArena::allocate_async) parks until a slot
+/// becomes available. Sync methods remain accessible through
+/// `Deref<Target = FixedArena>`.
 #[derive(Clone)]
 pub struct AsyncFixedArena<W = NotifyWaiters> {
     inner: FixedArena,
@@ -680,10 +681,11 @@ impl<W> fmt::Debug for AsyncFixedArena<W> {
 
 /// Async-capable wrapper around [`BuddyArena`].
 ///
-/// Created via [`BuddyArenaBuilder::build_async()`](crate::BuddyArenaBuilder::build_async). Provides
-/// [`allocate_async()`](AsyncBuddyArena::allocate_async) which parks
-/// until a large-enough block becomes available, while sync methods remain
-/// accessible through `Deref<Target = BuddyArena>`.
+/// Created via
+/// [`BuddyArenaBuilder::build_async()`](crate::BuddyArenaBuilder::build_async).
+/// [`allocate_async()`](AsyncBuddyArena::allocate_async) parks until a
+/// large-enough block becomes available. Sync methods remain accessible
+/// through `Deref<Target = BuddyArena>`.
 #[derive(Clone)]
 pub struct AsyncBuddyArena<W = NotifyWaiters> {
     inner: BuddyArena,

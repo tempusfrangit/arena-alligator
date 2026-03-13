@@ -1,16 +1,21 @@
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
-//! Lock-free arena allocator producing [`bytes::Bytes`] via zero-copy freeze.
+//! Arena allocator for building [`bytes::Bytes`] without copying the final
+//! payload.
 //!
 //! Write into a [`Buffer`], call [`freeze()`](Buffer::freeze), and get back
 //! `Bytes` backed by arena memory. The slot or block returns to the arena
 //! when the last `Bytes` reference drops.
 //!
-//! # Allocator modes
+//! # Arena selection
 //!
-//! - [`FixedArena`]: uniform slot sizes and a simple bitmap claim path.
-//! - [`BuddyArena`]: power-of-two blocks for variable-size requests.
+//! [`FixedArena`] is the recommended high-throughput path when one slot size
+//! covers the workload. Fixed uses uniform slots and a bitmap claim path.
+//!
+//! [`BuddyArena`] covers variable-size allocation from one shared region.
+//! Requests are rounded up to powers of two, larger blocks split on demand,
+//! and neighbors coalesce on release.
 //!
 //! Both produce the same [`Buffer`] type with identical write and freeze
 //! semantics.
@@ -37,9 +42,20 @@
 //!
 //! # Auto-spill
 //!
-//! Enable [`.auto_spill()`](FixedArenaBuilder::auto_spill) on the builder if
-//! you want overflow writes to spill onto the heap instead of panicking. The
-//! arena allocation is released as soon as the spill happens.
+//! [`.auto_spill()`](FixedArenaBuilder::auto_spill) changes overflow writes
+//! from panic-on-capacity to heap spill. The arena allocation is released as
+//! soon as the spill happens.
+//!
+//! # Initialization policy
+//!
+//! The default policy is [`InitPolicy::Uninit`], which matches Rust's common
+//! writable-uninitialized-memory model: newly allocated capacity is not
+//! zero-filled, and only the bytes written become visible in the
+//! frozen [`Bytes`](bytes::Bytes).
+//!
+//! [`InitPolicy::Zero`] clears reused arena memory before it is handed back to
+//! a writer. That adds work on every allocation in exchange for a stronger
+//! zero-on-allocate guarantee.
 //!
 //! # Frozen slice retention
 //!
@@ -48,8 +64,8 @@
 //! reference, so the arena memory stays pinned until every clone and slice is
 //! dropped.
 //!
-//! If you need mutable owned storage after `freeze()`, use
-//! [`BytesExt::into_owned()`]. It copies into a fresh `BytesMut`.
+//! [`BytesExt::into_owned()`] copies frozen bytes into fresh owned mutable
+//! storage.
 //!
 //! # Async allocation
 //!
