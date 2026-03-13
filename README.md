@@ -130,10 +130,12 @@ If you're new to the crate, run `fixed_buffer` first, then `buddy_buffer` for va
 | [`buddy_buffer`](examples/buddy_buffer.rs) | Variable-size allocations with split and coalesce |
 | [`spill_buffer`](examples/spill_buffer.rs) | Auto-spill to heap when a buffer outgrows slot capacity |
 | [`async_alloc`](examples/async_alloc.rs) | Wait for capacity with `allocate_async()` |
+| [`treiber_waker`](examples/treiber_waker.rs) | Custom `Waiter` impl using a lock-free Treiber stack |
 
 ```sh
 cargo run --example fixed_buffer
 cargo run --example async_alloc --features async-alloc
+cargo run --example treiber_waker --features async-alloc
 ```
 
 ## Benchmarks
