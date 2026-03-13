@@ -2,23 +2,23 @@
 
 use std::num::NonZeroUsize;
 
-use arena_alligator::BuddyArena;
+use arena_alligator::{BuddyArena, BuddyGeometry};
 use bytes::BufMut;
 
-fn main() {
-    let arena = BuddyArena::builder(
-        NonZeroUsize::new(1024 * 1024).unwrap(),
-        NonZeroUsize::new(256).unwrap(),
-    )
-    .build()
-    .unwrap();
+fn nz(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).unwrap()
+}
 
-    let mut small = arena.allocate(NonZeroUsize::new(100).unwrap()).unwrap();
+fn main() {
+    let geo = BuddyGeometry::exact(nz(1024 * 1024), nz(256)).unwrap();
+    let arena = BuddyArena::builder(geo).build().unwrap();
+
+    let mut small = arena.allocate(nz(100)).unwrap();
     small.put_slice(b"small payload");
     println!("requested 100 B, got {} B capacity", small.capacity());
     let small_bytes = small.freeze();
 
-    let mut large = arena.allocate(NonZeroUsize::new(50_000).unwrap()).unwrap();
+    let mut large = arena.allocate(nz(50_000)).unwrap();
     large.put_bytes(0xCD, 50_000);
     println!("requested 50000 B, got {} B capacity", large.capacity());
     let large_bytes = large.freeze();

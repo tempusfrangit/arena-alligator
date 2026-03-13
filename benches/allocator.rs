@@ -2,7 +2,7 @@ use std::num::NonZeroUsize;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use arena_alligator::{AllocError, BuddyArena, FixedArena};
+use arena_alligator::{AllocError, BuddyArena, BuddyGeometry, FixedArena};
 use bytes::{BufMut, Bytes};
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 
@@ -36,7 +36,7 @@ fn contention_levels() -> Vec<usize> {
 
 fn fixed_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("fixed_roundtrip");
-    let arena = FixedArena::builder(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
+    let arena = FixedArena::with_slot_capacity(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
         .build()
         .unwrap();
 
@@ -58,9 +58,11 @@ fn fixed_roundtrip(c: &mut Criterion) {
 
 fn buddy_roundtrip(c: &mut Criterion) {
     let mut group = c.benchmark_group("buddy_roundtrip");
-    let arena = BuddyArena::builder(nz(BUDDY_TOTAL_SIZE), nz(BUDDY_MIN_BLOCK))
-        .build()
-        .unwrap();
+    let arena = BuddyArena::builder(
+        BuddyGeometry::exact(nz(BUDDY_TOTAL_SIZE), nz(BUDDY_MIN_BLOCK)).unwrap(),
+    )
+    .build()
+    .unwrap();
 
     for len in [256usize, 1024, 4096, 16_384] {
         group.throughput(Throughput::Bytes(len as u64));
@@ -89,9 +91,10 @@ fn fixed_contention(c: &mut Criterion) {
             );
             group.throughput(Throughput::Elements(threads as u64));
             group.bench_with_input(id, &threads, |b, &threads| {
-                let arena = FixedArena::builder(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
-                    .build()
-                    .unwrap();
+                let arena =
+                    FixedArena::with_slot_capacity(nz(FIXED_SLOT_COUNT), nz(FIXED_SLOT_CAPACITY))
+                        .build()
+                        .unwrap();
                 let held = hold_fixed_capacity(&arena, hold_pct);
 
                 b.iter_custom(|iters| {
@@ -117,9 +120,11 @@ fn buddy_contention(c: &mut Criterion) {
             );
             group.throughput(Throughput::Elements(threads as u64));
             group.bench_with_input(id, &threads, |b, &threads| {
-                let arena = BuddyArena::builder(nz(BUDDY_TOTAL_SIZE), nz(BUDDY_MIN_BLOCK))
-                    .build()
-                    .unwrap();
+                let arena = BuddyArena::builder(
+                    BuddyGeometry::exact(nz(BUDDY_TOTAL_SIZE), nz(BUDDY_MIN_BLOCK)).unwrap(),
+                )
+                .build()
+                .unwrap();
                 let held = hold_buddy_capacity(&arena, hold_pct);
 
                 b.iter_custom(|iters| {
@@ -136,7 +141,7 @@ fn buddy_contention(c: &mut Criterion) {
 
 fn fixed_auto_spill(c: &mut Criterion) {
     let mut group = c.benchmark_group("fixed_auto_spill");
-    let arena = FixedArena::builder(nz(FIXED_SLOT_COUNT), nz(1024))
+    let arena = FixedArena::with_slot_capacity(nz(FIXED_SLOT_COUNT), nz(1024))
         .auto_spill()
         .build()
         .unwrap();

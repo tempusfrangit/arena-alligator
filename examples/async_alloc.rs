@@ -6,15 +6,16 @@ use std::sync::Arc;
 use arena_alligator::FixedArena;
 use bytes::BufMut;
 
+fn nz(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).unwrap()
+}
+
 #[tokio::main]
 async fn main() {
     let arena = Arc::new(
-        FixedArena::builder(
-            NonZeroUsize::new(2).unwrap(),
-            NonZeroUsize::new(256).unwrap(),
-        )
-        .build_async()
-        .unwrap(),
+        FixedArena::with_slot_capacity(nz(2), nz(256))
+            .build_async()
+            .unwrap(),
     );
 
     let mut buf1 = arena.allocate_async().await;

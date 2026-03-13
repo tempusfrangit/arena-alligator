@@ -22,10 +22,12 @@
 //! use arena_alligator::FixedArena;
 //! use bytes::BufMut;
 //!
-//! let arena = FixedArena::builder(
+//! let arena = FixedArena::with_slot_capacity(
 //!     NonZeroUsize::new(1024).unwrap(),
 //!     NonZeroUsize::new(4096).unwrap(),
-//! ).build().unwrap();
+//! )
+//!     .build()
+//!     .unwrap();
 //!
 //! let mut buf = arena.allocate().unwrap();
 //! buf.put_slice(b"hello");
@@ -49,7 +51,7 @@
 //! # Async allocation
 //!
 //! With the `async-alloc` feature, [`AsyncFixedArena`] and [`AsyncBuddyArena`]
-//! provide `allocate_async()` which parks until capacity is available.
+//! provide `allocate_async()` which waits until capacity is available.
 
 mod allocation;
 mod arena;
@@ -57,6 +59,7 @@ mod bitmap;
 mod buddy;
 mod buffer;
 mod error;
+mod geometry;
 mod handle;
 mod metrics;
 mod sync;
@@ -68,6 +71,7 @@ pub use arena::{FixedArena, FixedArenaBuilder, InitPolicy, PageSize, Unfaulted};
 pub use buddy::{BuddyArena, BuddyArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};
+pub use geometry::BuddyGeometry;
 pub use metrics::{BuddyArenaMetrics, FixedArenaMetrics};
 
 #[cfg(feature = "async-alloc")]

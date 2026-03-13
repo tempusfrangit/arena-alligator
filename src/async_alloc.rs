@@ -742,6 +742,7 @@ mod tests {
     use tokio::time::{Duration, timeout};
 
     use crate::BuddyArena;
+    use crate::BuddyGeometry;
     use crate::FixedArena;
 
     use super::*;
@@ -858,7 +859,9 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_async_basic() {
-        let arena = FixedArena::builder(nz(1), nz(32)).build_async().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
+            .build_async()
+            .unwrap();
         let mut buf = arena.allocate_async().await;
         buf.put_slice(b"data");
         let bytes = buf.freeze();
@@ -868,7 +871,11 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_async_waits_then_succeeds() {
-        let arena = Arc::new(FixedArena::builder(nz(1), nz(32)).build_async().unwrap());
+        let arena = Arc::new(
+            FixedArena::with_slot_capacity(nz(1), nz(32))
+                .build_async()
+                .unwrap(),
+        );
         let mut buf = arena.allocate_async().await;
         buf.put_slice(b"blocking");
         let bytes = buf.freeze();
@@ -888,7 +895,9 @@ mod tests {
 
     #[tokio::test]
     async fn sync_allocate_still_fast_fails() {
-        let arena = FixedArena::builder(nz(1), nz(32)).build_async().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
+            .build_async()
+            .unwrap();
         let _buf = arena.allocate().unwrap();
         let err = arena.allocate().unwrap_err();
         assert_eq!(err, crate::AllocError::ArenaFull);
@@ -896,7 +905,11 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_waiters_all_served() {
-        let arena = Arc::new(FixedArena::builder(nz(2), nz(32)).build_async().unwrap());
+        let arena = Arc::new(
+            FixedArena::with_slot_capacity(nz(2), nz(32))
+                .build_async()
+                .unwrap(),
+        );
         let buf1 = arena.allocate().unwrap();
         let buf2 = arena.allocate().unwrap();
         let a1 = Arc::clone(&arena);
@@ -916,14 +929,20 @@ mod tests {
 
     #[tokio::test]
     async fn deref_exposes_sync_methods() {
-        let arena = FixedArena::builder(nz(4), nz(64)).build_async().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(4), nz(64))
+            .build_async()
+            .unwrap();
         assert_eq!(arena.slot_count(), 4);
         assert_eq!(arena.slot_capacity(), 64);
     }
 
     #[tokio::test]
     async fn fixed_cancellation_no_leak() {
-        let arena = Arc::new(FixedArena::builder(nz(1), nz(32)).build_async().unwrap());
+        let arena = Arc::new(
+            FixedArena::with_slot_capacity(nz(1), nz(32))
+                .build_async()
+                .unwrap(),
+        );
         let buf = arena.allocate().unwrap();
 
         let arena2 = Arc::clone(&arena);
@@ -1036,7 +1055,7 @@ mod tests {
     async fn fixed_custom_waiter_supported() {
         let waiters = CountingWaiters::new(1);
         let arena = Arc::new(
-            FixedArena::builder(nz(1), nz(32))
+            FixedArena::with_slot_capacity(nz(1), nz(32))
                 .build_async_with(waiters.clone())
                 .unwrap(),
         );
@@ -1061,7 +1080,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_allocate_async_waits_then_succeeds() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1086,7 +1105,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_multiple_waiters_all_served() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1115,7 +1134,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_large_waiter_not_starved_by_small() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1163,7 +1182,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_large_request_unblocks_after_coalesce() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1192,7 +1211,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_cancellation_does_not_leak() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1212,7 +1231,7 @@ mod tests {
     async fn buddy_custom_waiter_supported() {
         let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async_with(waiters.clone())
                 .unwrap(),
         );
@@ -1237,7 +1256,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_multi_order_waiters_served_via_split() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(4096), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1268,7 +1287,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_cancel_wake_interleaving_count_invariant() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(8192), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1321,7 +1340,7 @@ mod tests {
     async fn buddy_teardown_with_live_waiters() {
         for _ in 0..20 {
             let arena = Arc::new(
-                BuddyArena::builder(nz(4096), nz(512))
+                BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
                     .build_async()
                     .unwrap(),
             );
@@ -1355,7 +1374,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_fairness_large_not_starved_by_repeated_small() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(8192), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );
@@ -1413,7 +1432,7 @@ mod tests {
     #[tokio::test]
     async fn buddy_fairness_mixed_sizes_no_deadlock() {
         let arena = Arc::new(
-            BuddyArena::builder(nz(8192), nz(512))
+            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
                 .build_async()
                 .unwrap(),
         );

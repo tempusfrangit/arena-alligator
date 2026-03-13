@@ -19,6 +19,7 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) free_bitmaps: Box<[AtomicBitmap]>,
     pub(crate) nonempty_orders: AtomicUsize,
     pub(crate) auto_spill: bool,
+    pub(crate) cap_capacity: bool,
     pub(crate) init_policy: crate::arena::InitPolicy,
     pub(crate) metrics: MetricsState,
     #[cfg(feature = "async-alloc")]
@@ -60,10 +61,9 @@ impl fmt::Debug for BuddyArena {
 
 impl BuddyArena {
     /// Create a builder for a buddy arena.
-    pub fn builder(total_size: NonZeroUsize, min_block_size: NonZeroUsize) -> BuddyArenaBuilder {
+    pub fn builder(geometry: crate::geometry::BuddyGeometry) -> BuddyArenaBuilder {
         BuddyArenaBuilder {
-            total_size,
-            min_block_size,
+            geometry,
             config: crate::arena::BuildConfig::new(),
         }
     }
@@ -106,28 +106,34 @@ impl BuddyArena {
             })?;
 
         let (final_order, final_block_idx) = self.split_down(order, block_idx, target_order);
-        let capacity = self.block_size(final_order);
+        let block_size = self.block_size(final_order);
         let offset = self.block_offset(final_order, final_block_idx);
 
         match self.inner.init_policy {
             crate::arena::InitPolicy::Zero => {
-                // SAFETY: ptr+offset..ptr+offset+capacity is within the arena allocation
+                // SAFETY: ptr+offset..ptr+offset+block_size is within the arena allocation
                 // and exclusively owned by this block (bitmap claim enforced above).
                 unsafe {
-                    self.inner.ptr.add(offset).write_bytes(0, capacity);
+                    self.inner.ptr.add(offset).write_bytes(0, block_size);
                 }
             }
             crate::arena::InitPolicy::Uninit => {}
         }
 
-        self.inner.metrics.record_alloc_success(capacity);
+        self.inner.metrics.record_alloc_success(block_size);
+
+        let user_capacity = if self.inner.cap_capacity {
+            len.get().min(block_size)
+        } else {
+            block_size
+        };
 
         Ok(Buffer::new_buddy(
             Arc::clone(&self.inner),
             final_order,
             final_block_idx,
             offset,
-            capacity,
+            user_capacity,
         ))
     }
 
@@ -227,21 +233,11 @@ impl BuddyArena {
 
 /// Builder for [`BuddyArena`].
 pub struct BuddyArenaBuilder {
-    total_size: NonZeroUsize,
-    min_block_size: NonZeroUsize,
+    geometry: crate::geometry::BuddyGeometry,
     config: crate::arena::BuildConfig,
 }
 
 impl BuddyArenaBuilder {
-    /// Alignment for arena backing and block boundaries.
-    ///
-    /// Must be a power of 2. The minimum block size must be a multiple of
-    /// the chosen alignment.
-    pub fn alignment(mut self, n: usize) -> Self {
-        self.config.alignment = n;
-        self
-    }
-
     /// Enable auto-spill: overflow writes copy to heap after releasing
     /// the buddy block back to the arena.
     pub fn auto_spill(mut self) -> Self {
@@ -312,16 +308,13 @@ impl BuddyArenaBuilder {
         self,
         #[cfg(feature = "async-alloc")] waker: Option<crate::async_alloc::BuddyWakeHandle>,
     ) -> Result<BuddyArena, BuildError> {
-        self.config.validate_alignment()?;
+        let total_size = self.geometry.total_size();
+        let min_block_size = self.geometry.min_block_size();
+        let max_order = self.geometry.max_order();
+        let alignment = self.geometry.alignment();
 
-        let total_size = self.total_size.get();
-        let min_block_size = self.min_block_size.get();
-
-        let max_order = buddy_max_order(total_size, min_block_size, self.config.alignment)
-            .ok_or(BuildError::InvalidGeometry)?;
-
-        let layout = Layout::from_size_align(total_size, self.config.alignment)
-            .map_err(|_| BuildError::SizeOverflow)?;
+        let layout =
+            Layout::from_size_align(total_size, alignment).map_err(|_| BuildError::SizeOverflow)?;
 
         // SAFETY: layout has non-zero size and valid alignment.
         let ptr = unsafe { std::alloc::alloc(layout) };
@@ -345,6 +338,7 @@ impl BuddyArenaBuilder {
             free_bitmaps: free_bitmaps.into_boxed_slice(),
             nonempty_orders: AtomicUsize::new(1usize << max_order),
             auto_spill: self.config.auto_spill,
+            cap_capacity: self.geometry.cap_capacity(),
             init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
             #[cfg(feature = "async-alloc")]
@@ -361,12 +355,7 @@ impl BuddyArenaBuilder {
 impl BuddyArenaBuilder {
     /// Build an async-capable buddy arena using the default per-order notify waiter.
     pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
-        let max_order = buddy_max_order(
-            self.total_size.get(),
-            self.min_block_size.get(),
-            self.config.alignment,
-        )
-        .ok_or(BuildError::InvalidGeometry)?;
+        let max_order = self.geometry.max_order();
         self.build_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
     }
 
@@ -435,30 +424,6 @@ impl BuddyArenaInner {
     }
 }
 
-fn buddy_max_order(total_size: usize, min_block_size: usize, alignment: usize) -> Option<usize> {
-    if !min_block_size.is_power_of_two() {
-        return None;
-    }
-    if min_block_size < alignment || total_size < min_block_size {
-        return None;
-    }
-    if !total_size.is_multiple_of(min_block_size) {
-        return None;
-    }
-
-    let blocks = total_size / min_block_size;
-    if !blocks.is_power_of_two() {
-        return None;
-    }
-
-    let max_order = blocks.trailing_zeros() as usize;
-    if max_order >= usize::BITS as usize {
-        return None;
-    }
-
-    Some(max_order)
-}
-
 fn blocks_at_order(max_order: usize, order: usize) -> usize {
     1usize << (max_order - order)
 }
@@ -466,14 +431,19 @@ fn blocks_at_order(max_order: usize, order: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::BuddyGeometry;
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
     }
 
+    fn geo(total: usize, min_block: usize) -> BuddyGeometry {
+        BuddyGeometry::exact(nz(total), nz(min_block)).unwrap()
+    }
+
     #[test]
     fn build_basic_buddy_arena() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
         assert_eq!(arena.total_size(), 4096);
         assert_eq!(arena.min_block_size(), 512);
         assert_eq!(arena.max_order(), 3);
@@ -482,46 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn build_rejects_non_power_of_two_min_block_size() {
-        let err = BuddyArena::builder(nz(4096), nz(768)).build().unwrap_err();
-        assert_eq!(err, BuildError::InvalidGeometry);
-    }
-
-    #[test]
-    fn build_rejects_total_size_not_power_of_two_multiple() {
-        let err = BuddyArena::builder(nz(6144), nz(1024)).build().unwrap_err();
-        assert_eq!(err, BuildError::InvalidGeometry);
-    }
-
-    #[test]
-    fn build_rejects_total_size_smaller_than_min_block() {
-        let err = BuddyArena::builder(nz(256), nz(512)).build().unwrap_err();
-        assert_eq!(err, BuildError::InvalidGeometry);
-    }
-
-    #[test]
-    fn build_rejects_alignment_larger_than_min_block() {
-        let err = BuddyArena::builder(nz(4096), nz(512))
-            .alignment(1024)
-            .build()
-            .unwrap_err();
-        assert_eq!(err, BuildError::InvalidGeometry);
-    }
-
-    #[test]
-    fn build_rejects_invalid_alignment() {
-        let err = BuddyArena::builder(nz(4096), nz(512))
-            .alignment(3)
-            .build()
-            .unwrap_err();
-        assert_eq!(err, BuildError::InvalidAlignment);
-    }
-
-    #[test]
-    fn rounded_capacity_derivation() {
-        assert_eq!(buddy_max_order(4096, 512, 1), Some(3));
-        assert_eq!(buddy_max_order(8192, 512, 1), Some(4));
-        assert_eq!(buddy_max_order(4096, 256, 256), Some(4));
+    fn blocks_at_order_derivation() {
         assert_eq!(blocks_at_order(3, 3), 1);
         assert_eq!(blocks_at_order(3, 2), 2);
         assert_eq!(blocks_at_order(3, 1), 4);
@@ -530,7 +461,7 @@ mod tests {
 
     #[test]
     fn initial_free_state_has_one_max_order_block() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
         for order in 0..arena.max_order() {
             assert_eq!(arena.free_block_count(order), 0);
             assert!(!arena.is_block_free(order, 0));
@@ -543,21 +474,21 @@ mod tests {
 
     #[test]
     fn allocate_rounds_up_request_size() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
         let buf = arena.allocate(nz(700)).unwrap();
         assert_eq!(buf.capacity(), 1024);
     }
 
     #[test]
     fn allocate_exhausts_large_block() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
         let _buf = arena.allocate(nz(4096)).unwrap();
         assert_eq!(arena.allocate(nz(512)).unwrap_err(), AllocError::ArenaFull);
     }
 
     #[test]
     fn split_path_publishes_sibling_blocks() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
         let _buf = arena.allocate(nz(512)).unwrap();
         assert!(arena.is_block_free(2, 1));
         assert!(arena.is_block_free(1, 1));
@@ -566,7 +497,7 @@ mod tests {
 
     #[test]
     fn coalesce_path_restores_top_block() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
         let buf = arena.allocate(nz(512)).unwrap();
         drop(buf);
         assert_eq!(arena.free_block_count(arena.max_order()), 1);
@@ -575,7 +506,7 @@ mod tests {
 
     #[test]
     fn metrics_track_allocate_free_and_failure() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
 
         let initial = arena.metrics();
         assert_eq!(initial.bytes_reserved, 4096);
@@ -602,7 +533,7 @@ mod tests {
 
     #[test]
     fn metrics_track_splits_and_largest_free_block() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
 
         let initial = arena.metrics();
         assert_eq!(initial.splits, 0);
@@ -623,7 +554,7 @@ mod tests {
 
     #[test]
     fn metrics_track_partial_coalesce() {
-        let arena = BuddyArena::builder(nz(4096), nz(512)).build().unwrap();
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
 
         let left = arena.allocate(nz(2048)).unwrap();
         let right = arena.allocate(nz(2048)).unwrap();
@@ -643,7 +574,7 @@ mod tests {
 
     #[test]
     fn build_unfaulted_then_fault_pages() {
-        let unfaulted = BuddyArena::builder(nz(4096), nz(512))
+        let unfaulted = BuddyArena::builder(geo(4096, 512))
             .page_size(crate::arena::PageSize::Size(nz(4096)))
             .build_unfaulted()
             .unwrap();
@@ -654,7 +585,7 @@ mod tests {
 
     #[test]
     fn build_unfaulted_into_inner() {
-        let unfaulted = BuddyArena::builder(nz(4096), nz(512))
+        let unfaulted = BuddyArena::builder(geo(4096, 512))
             .page_size(crate::arena::PageSize::Unknown)
             .build_unfaulted()
             .unwrap();
@@ -667,7 +598,7 @@ mod tests {
     fn init_policy_zero_fills_block() {
         use bytes::BufMut;
 
-        let arena = BuddyArena::builder(nz(1024), nz(1024))
+        let arena = BuddyArena::builder(geo(1024, 1024))
             .init_policy(crate::arena::InitPolicy::Zero)
             .page_size(crate::arena::PageSize::Unknown)
             .build()
@@ -683,5 +614,50 @@ mod tests {
         let buf = arena.allocate(nz(512)).unwrap();
         let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 1024) };
         assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
+    }
+
+    #[test]
+    fn nearest_caps_capacity_to_requested() {
+        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let arena = BuddyArena::builder(geo).build().unwrap();
+        let buf = arena.allocate(nz(700)).unwrap();
+        assert_eq!(buf.capacity(), 700);
+    }
+
+    #[test]
+    fn exact_exposes_full_block_capacity() {
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
+        let buf = arena.allocate(nz(700)).unwrap();
+        assert_eq!(buf.capacity(), 1024);
+    }
+
+    #[test]
+    fn nearest_write_up_to_requested_then_full() {
+        use bytes::BufMut;
+        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let arena = BuddyArena::builder(geo).build().unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(&vec![0xAB; 700]);
+        assert_eq!(buf.len(), 700);
+        assert_eq!(buf.remaining_mut(), 0);
+    }
+
+    #[test]
+    fn exact_write_up_to_full_block() {
+        use bytes::BufMut;
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
+        let mut buf = arena.allocate(nz(700)).unwrap();
+        buf.put_slice(&vec![0xAB; 1024]);
+        assert_eq!(buf.len(), 1024);
+        assert_eq!(buf.remaining_mut(), 0);
+    }
+
+    #[test]
+    fn nearest_metrics_reflect_block_size() {
+        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let arena = BuddyArena::builder(geo).build().unwrap();
+        let _buf = arena.allocate(nz(700)).unwrap();
+        let m = arena.metrics();
+        assert_eq!(m.bytes_live, 1024);
     }
 }

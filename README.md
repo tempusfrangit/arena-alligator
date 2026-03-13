@@ -4,14 +4,14 @@
 
 Lock-free arena allocator that produces `bytes::Bytes` via zero-copy freeze.
 
-Write into a `Buffer`, freeze it into `Bytes`, and let the arena reclaim the backing memory when the last reference drops. The common path avoids a copy on freeze and avoids a fresh heap allocation per buffer.
+Write into a `Buffer`, freeze it into `Bytes`, and let the arena reclaim the backing memory when the last reference drops.
 
 ```rust
 use std::num::NonZeroUsize;
 use arena_alligator::FixedArena;
 use bytes::BufMut;
 
-let arena = FixedArena::builder(
+let arena = FixedArena::with_slot_capacity(
     NonZeroUsize::new(1024).unwrap(),
     NonZeroUsize::new(4096).unwrap(),
 ).build()?;
@@ -30,13 +30,16 @@ let _bytes = buf.freeze();
 
 ```rust
 use std::num::NonZeroUsize;
-use arena_alligator::BuddyArena;
+use arena_alligator::{BuddyArena, BuddyGeometry};
 use bytes::BufMut;
 
 let arena = BuddyArena::builder(
-    NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
-    NonZeroUsize::new(256).unwrap(),
-).build()?;
+    BuddyGeometry::exact(
+        NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
+        NonZeroUsize::new(256).unwrap(),
+    )?,
+)
+.build()?;
 
 let mut buf = arena.allocate(NonZeroUsize::new(8192).unwrap())?;
 buf.put_slice(&vec![0u8; 8192]);
@@ -46,13 +49,13 @@ let _bytes = buf.freeze();
 
 ## Auto-spill
 
-By default, writing past buffer capacity panics. With `auto_spill()`, the buffer copies its current contents to heap-backed storage, frees the arena allocation immediately, and continues writing on the heap. `freeze()` still returns `Bytes`.
+By default, writing past buffer capacity panics. With `auto_spill()`, the buffer copies its current contents to heap-backed storage, frees the arena allocation, and keeps writing on the heap. `freeze()` still returns `Bytes`.
 
 ```rust
 # use std::num::NonZeroUsize;
 # use arena_alligator::FixedArena;
 # use bytes::BufMut;
-let arena = FixedArena::builder(
+let arena = FixedArena::with_slot_capacity(
     NonZeroUsize::new(1024).unwrap(),
     NonZeroUsize::new(1024).unwrap(),
 ).auto_spill().build()?;
@@ -66,7 +69,7 @@ let _bytes = buf.freeze();
 
 ## Async allocation
 
-With the `async-alloc` feature, both arena types support `allocate_async()`. The task waits until capacity is available and then retries against the live bitmap state.
+With the `async-alloc` feature, both arena types support `allocate_async()`. The task waits until capacity is available.
 
 ```toml
 [dependencies]
@@ -75,7 +78,10 @@ arena-alligator = { version = "0.5", features = ["async-alloc"] }
 
 ```rust,ignore
 let arena = Arc::new(
-    FixedArena::builder(nz(2), nz(256))
+    FixedArena::with_slot_capacity(
+        NonZeroUsize::new(2).unwrap(),
+        NonZeroUsize::new(256).unwrap(),
+    )
         .build_async()
         .unwrap(),
 );

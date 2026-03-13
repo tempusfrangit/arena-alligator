@@ -244,7 +244,7 @@ unsafe impl BufMut for Buffer {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use crate::{BuddyArena, FixedArena};
+    use crate::{BuddyArena, BuddyGeometry, FixedArena};
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
@@ -252,7 +252,9 @@ mod tests {
 
     #[test]
     fn buffer_reports_capacity_and_empty() {
-        let arena = FixedArena::builder(nz(1), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .build()
+            .unwrap();
         let buf = arena.allocate().unwrap();
         assert_eq!(buf.capacity(), 64);
         assert_eq!(buf.len(), 0);
@@ -263,7 +265,9 @@ mod tests {
 
     #[test]
     fn put_slice_and_len() {
-        let arena = FixedArena::builder(nz(1), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .build()
+            .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"hello");
         assert_eq!(buf.len(), 5);
@@ -273,7 +277,9 @@ mod tests {
 
     #[test]
     fn put_slice_fills_exactly() {
-        let arena = FixedArena::builder(nz(1), nz(8)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(8))
+            .build()
+            .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"12345678");
         assert_eq!(buf.len(), 8);
@@ -283,14 +289,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "advance out of bounds")]
     fn put_slice_overflow_panics() {
-        let arena = FixedArena::builder(nz(1), nz(4)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(4))
+            .build()
+            .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"12345");
     }
 
     #[test]
     fn try_put_slice_ok() {
-        let arena = FixedArena::builder(nz(1), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .build()
+            .unwrap();
         let mut buf = arena.allocate().unwrap();
         assert!(buf.try_put_slice(b"hello").is_ok());
         assert_eq!(buf.len(), 5);
@@ -298,7 +308,9 @@ mod tests {
 
     #[test]
     fn try_put_slice_full() {
-        let arena = FixedArena::builder(nz(1), nz(4)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(4))
+            .build()
+            .unwrap();
         let mut buf = arena.allocate().unwrap();
         let err = buf.try_put_slice(b"12345").unwrap_err();
         assert_eq!(err.remaining, 4);
@@ -308,7 +320,9 @@ mod tests {
 
     #[test]
     fn will_fit() {
-        let arena = FixedArena::builder(nz(1), nz(10)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(10))
+            .build()
+            .unwrap();
         let mut buf = arena.allocate().unwrap();
         assert!(buf.will_fit(10));
         assert!(!buf.will_fit(11));
@@ -319,7 +333,9 @@ mod tests {
 
     #[test]
     fn multiple_writes_accumulate() {
-        let arena = FixedArena::builder(nz(1), nz(64)).build().unwrap();
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .build()
+            .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"hello ");
         buf.put_slice(b"world");
@@ -328,7 +344,7 @@ mod tests {
 
     #[test]
     fn auto_spill_on_overflow() {
-        let arena = FixedArena::builder(nz(1), nz(8))
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(8))
             .auto_spill()
             .build()
             .unwrap();
@@ -342,7 +358,7 @@ mod tests {
 
     #[test]
     fn auto_spill_freeze_produces_valid_bytes() {
-        let arena = FixedArena::builder(nz(1), nz(4))
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(4))
             .auto_spill()
             .build()
             .unwrap();
@@ -355,7 +371,7 @@ mod tests {
 
     #[test]
     fn auto_spill_frees_arena_slot_immediately() {
-        let arena = FixedArena::builder(nz(1), nz(4))
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(4))
             .auto_spill()
             .build()
             .unwrap();
@@ -366,7 +382,7 @@ mod tests {
 
     #[test]
     fn auto_spill_remaining_mut_is_usize_max() {
-        let arena = FixedArena::builder(nz(1), nz(8))
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(8))
             .auto_spill()
             .build()
             .unwrap();
@@ -376,7 +392,7 @@ mod tests {
 
     #[test]
     fn auto_spill_abandon_frees_slot() {
-        let arena = FixedArena::builder(nz(1), nz(4))
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(4))
             .auto_spill()
             .build()
             .unwrap();
@@ -388,7 +404,7 @@ mod tests {
 
     #[test]
     fn buddy_auto_spill_on_overflow() {
-        let arena = BuddyArena::builder(nz(4096), nz(512))
+        let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
             .auto_spill()
             .build()
             .unwrap();
@@ -402,7 +418,7 @@ mod tests {
 
     #[test]
     fn buddy_auto_spill_freeze_produces_valid_bytes() {
-        let arena = BuddyArena::builder(nz(4096), nz(512))
+        let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
             .auto_spill()
             .build()
             .unwrap();
@@ -417,7 +433,7 @@ mod tests {
 
     #[test]
     fn buddy_auto_spill_remaining_mut_is_usize_max() {
-        let arena = BuddyArena::builder(nz(4096), nz(512))
+        let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
             .auto_spill()
             .build()
             .unwrap();
@@ -427,7 +443,7 @@ mod tests {
 
     #[test]
     fn spill_metrics_increment_once_and_release_capacity() {
-        let arena = FixedArena::builder(nz(1), nz(8))
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(8))
             .auto_spill()
             .build()
             .unwrap();
