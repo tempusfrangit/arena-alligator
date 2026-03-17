@@ -252,6 +252,7 @@ impl FixedArena {
             slot_count,
             slot_capacity,
             config: BuildConfig::new(),
+            _mode: std::marker::PhantomData,
         }
     }
 
@@ -281,6 +282,7 @@ impl FixedArena {
             // per_slot >= 1 because arena_capacity >= 1 and slot_count >= 1
             slot_capacity: NonZeroUsize::new(per_slot).unwrap(),
             config: BuildConfig::new(),
+            _mode: std::marker::PhantomData,
         }
     }
 
@@ -339,13 +341,22 @@ impl FixedArena {
 ///
 /// Created via [`FixedArena::with_slot_capacity()`] or
 /// [`FixedArena::with_arena_capacity()`].
-pub struct FixedArenaBuilder {
+///
+/// The `Mode` parameter controls which build targets are available:
+///
+/// - [`Standard`] (default): builds [`FixedArena`]. Can transition to
+///   [`AutoSpill`] or [`HazmatRaw`].
+/// - [`AutoSpill`]: builds [`FixedArena`] with heap overflow fallback.
+/// - [`HazmatRaw`]: builds [`RawFixedArena`](crate::hazmat::RawFixedArena)
+///   with raw pointer access. Requires `hazmat-raw-access` feature.
+pub struct FixedArenaBuilder<Mode = Standard> {
     slot_count: NonZeroUsize,
     slot_capacity: NonZeroUsize,
     config: BuildConfig,
+    _mode: std::marker::PhantomData<Mode>,
 }
 
-impl FixedArenaBuilder {
+impl<Mode> FixedArenaBuilder<Mode> {
     /// Alignment for arena backing, slot boundaries, and slot capacities.
     ///
     /// Must be a power of 2. Default: 1 (no alignment constraint).
@@ -355,17 +366,10 @@ impl FixedArenaBuilder {
         self
     }
 
-    /// Enable auto-spill: overflow writes copy to heap, freeing the arena slot.
-    pub fn auto_spill(mut self) -> Self {
-        self.config.auto_spill = true;
-        self
-    }
-
     /// Set the initialization policy for allocated buffers.
     ///
     /// Default: [`InitPolicy::Uninit`]. When set to [`InitPolicy::Zero`],
-    /// every call to [`FixedArena::allocate()`] writes zeroes across the
-    /// slot before returning the buffer.
+    /// every allocation writes zeroes across the slot before returning.
     pub fn init_policy(mut self, policy: InitPolicy) -> Self {
         self.config.init_policy = policy;
         self
@@ -382,41 +386,6 @@ impl FixedArenaBuilder {
     pub fn page_size(mut self, policy: PageSize) -> Self {
         self.config.page_size = policy;
         self
-    }
-    /// Build the arena, prefaulting pages if a page size is configured.
-    pub fn build(self) -> Result<FixedArena, BuildError> {
-        let page_size = self.config.page_size.resolve();
-        let arena = self.build_inner(
-            #[cfg(feature = "async-alloc")]
-            None,
-        )?;
-        if let Some(ps) = page_size {
-            prefault_region(
-                arena.inner.ptr,
-                arena.inner.slot_count * arena.inner.slot_capacity,
-                ps,
-            );
-        }
-        Ok(arena)
-    }
-
-    /// Build the arena without prefaulting. Returns an [`Unfaulted`] wrapper.
-    ///
-    /// See [`Unfaulted`] for the three consumption paths: explicit fault,
-    /// demand-fault, or direct allocate.
-    pub fn build_unfaulted(self) -> Result<Unfaulted<FixedArena>, BuildError> {
-        let page_size = self.config.page_size.resolve();
-        let arena = self.build_inner(
-            #[cfg(feature = "async-alloc")]
-            None,
-        )?;
-        let total_size = arena.inner.slot_count * arena.inner.slot_capacity;
-        Ok(Unfaulted::new(
-            arena.inner.ptr,
-            total_size,
-            page_size,
-            arena,
-        ))
     }
 
     fn build_inner(
@@ -461,17 +430,40 @@ impl FixedArenaBuilder {
             inner: Arc::new(inner),
         })
     }
-}
 
-#[cfg(feature = "async-alloc")]
-impl FixedArenaBuilder {
-    /// Build an async-capable arena using the default notify-based waiter.
-    pub fn build_async(self) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
-        self.build_async_with(crate::async_alloc::NotifyWaiters::new(1))
+    fn build_fixed(self) -> Result<FixedArena, BuildError> {
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_inner(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        if let Some(ps) = page_size {
+            prefault_region(
+                arena.inner.ptr,
+                arena.inner.slot_count * arena.inner.slot_capacity,
+                ps,
+            );
+        }
+        Ok(arena)
     }
 
-    /// Build an async-capable arena with a custom waiter policy.
-    pub fn build_async_with<W>(
+    fn build_fixed_unfaulted(self) -> Result<Unfaulted<FixedArena>, BuildError> {
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_inner(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        let total_size = arena.inner.slot_count * arena.inner.slot_capacity;
+        Ok(Unfaulted::new(
+            arena.inner.ptr,
+            total_size,
+            page_size,
+            arena,
+        ))
+    }
+
+    #[cfg(feature = "async-alloc")]
+    fn build_fixed_async_with<W>(
         self,
         waiters: W,
     ) -> Result<crate::async_alloc::AsyncFixedArena<W>, BuildError>
@@ -493,6 +485,130 @@ impl FixedArenaBuilder {
         }
 
         Ok(crate::async_alloc::AsyncFixedArena::new(arena, waiters))
+    }
+}
+
+impl FixedArenaBuilder<Standard> {
+    /// Transition to [`AutoSpill`] mode. Overflow writes copy to heap,
+    /// freeing the arena slot.
+    ///
+    /// Mutually exclusive with
+    /// [`hazmat_raw_access()`](Self::hazmat_raw_access) at compile time.
+    pub fn auto_spill(self) -> FixedArenaBuilder<AutoSpill> {
+        FixedArenaBuilder {
+            slot_count: self.slot_count,
+            slot_capacity: self.slot_capacity,
+            config: BuildConfig {
+                auto_spill: true,
+                ..self.config
+            },
+            _mode: std::marker::PhantomData,
+        }
+    }
+
+    /// Build the arena, prefaulting pages if a page size is configured.
+    pub fn build(self) -> Result<FixedArena, BuildError> {
+        self.build_fixed()
+    }
+
+    /// Build the arena without prefaulting. Returns an [`Unfaulted`] wrapper.
+    ///
+    /// See [`Unfaulted`] for the three consumption paths: explicit fault,
+    /// demand-fault, or direct allocate.
+    pub fn build_unfaulted(self) -> Result<Unfaulted<FixedArena>, BuildError> {
+        self.build_fixed_unfaulted()
+    }
+}
+
+impl FixedArenaBuilder<AutoSpill> {
+    /// Build the arena, prefaulting pages if a page size is configured.
+    pub fn build(self) -> Result<FixedArena, BuildError> {
+        self.build_fixed()
+    }
+
+    /// Build the arena without prefaulting. Returns an [`Unfaulted`] wrapper.
+    pub fn build_unfaulted(self) -> Result<Unfaulted<FixedArena>, BuildError> {
+        self.build_fixed_unfaulted()
+    }
+}
+
+#[cfg(feature = "hazmat-raw-access")]
+impl FixedArenaBuilder<Standard> {
+    /// Transition to [`HazmatRaw`] mode.
+    ///
+    /// Mutually exclusive with [`auto_spill()`](Self::auto_spill) at compile
+    /// time.
+    pub fn hazmat_raw_access(self) -> FixedArenaBuilder<HazmatRaw> {
+        FixedArenaBuilder {
+            slot_count: self.slot_count,
+            slot_capacity: self.slot_capacity,
+            config: self.config,
+            _mode: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "hazmat-raw-access")]
+impl FixedArenaBuilder<HazmatRaw> {
+    /// Build the arena, prefaulting pages if a page size is configured.
+    pub fn build(self) -> Result<crate::hazmat::RawFixedArena, BuildError> {
+        self.build_fixed().map(crate::hazmat::RawFixedArena)
+    }
+
+    /// Build the arena without prefaulting.
+    pub fn build_unfaulted(
+        self,
+    ) -> Result<Unfaulted<crate::hazmat::RawFixedArena>, BuildError> {
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_inner(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        let total_size = arena.inner.slot_count * arena.inner.slot_capacity;
+        Ok(Unfaulted::new(
+            arena.inner.ptr,
+            total_size,
+            page_size,
+            crate::hazmat::RawFixedArena(arena),
+        ))
+    }
+}
+
+#[cfg(feature = "async-alloc")]
+impl FixedArenaBuilder<Standard> {
+    /// Build an async-capable arena using the default notify-based waiter.
+    pub fn build_async(self) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
+        self.build_fixed_async_with(crate::async_alloc::NotifyWaiters::new(1))
+    }
+
+    /// Build an async-capable arena with a custom waiter policy.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::async_alloc::AsyncFixedArena<W>, BuildError>
+    where
+        W: crate::async_alloc::Waiter,
+    {
+        self.build_fixed_async_with(waiters)
+    }
+}
+
+#[cfg(feature = "async-alloc")]
+impl FixedArenaBuilder<AutoSpill> {
+    /// Build an async-capable arena using the default notify-based waiter.
+    pub fn build_async(self) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
+        self.build_fixed_async_with(crate::async_alloc::NotifyWaiters::new(1))
+    }
+
+    /// Build an async-capable arena with a custom waiter policy.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::async_alloc::AsyncFixedArena<W>, BuildError>
+    where
+        W: crate::async_alloc::Waiter,
+    {
+        self.build_fixed_async_with(waiters)
     }
 }
 
@@ -750,5 +866,24 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(arena.slot_capacity(), 384);
+    }
+
+    #[test]
+    fn auto_spill_builder_produces_fixed_arena() {
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .auto_spill()
+            .build()
+            .unwrap();
+        let _buf = arena.allocate().unwrap();
+    }
+
+    #[cfg(feature = "hazmat-raw-access")]
+    #[test]
+    fn hazmat_builder_produces_raw_fixed_arena() {
+        let raw_arena = FixedArena::with_slot_capacity(nz(4), nz(64))
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let _buf = raw_arena.allocate().unwrap();
     }
 }

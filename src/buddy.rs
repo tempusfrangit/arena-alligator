@@ -82,6 +82,7 @@ impl BuddyArena {
         BuddyArenaBuilder {
             geometry,
             config: crate::arena::BuildConfig::new(),
+            _mode: std::marker::PhantomData,
         }
     }
 
@@ -249,19 +250,24 @@ impl BuddyArena {
 }
 
 /// Builder for [`BuddyArena`].
-pub struct BuddyArenaBuilder {
+///
+/// The `Mode` parameter controls which build targets are available:
+///
+/// - [`Standard`](crate::Standard) (default): builds [`BuddyArena`]. Can
+///   transition to [`AutoSpill`](crate::AutoSpill) or
+///   [`HazmatRaw`](crate::HazmatRaw).
+/// - [`AutoSpill`](crate::AutoSpill): builds [`BuddyArena`] with heap
+///   overflow fallback.
+/// - [`HazmatRaw`](crate::HazmatRaw): builds
+///   [`RawBuddyArena`](crate::hazmat::RawBuddyArena) with raw pointer
+///   access. Requires `hazmat-raw-access` feature.
+pub struct BuddyArenaBuilder<Mode = crate::arena::Standard> {
     geometry: crate::geometry::BuddyGeometry,
     config: crate::arena::BuildConfig,
+    _mode: std::marker::PhantomData<Mode>,
 }
 
-impl BuddyArenaBuilder {
-    /// Enable auto-spill: overflow writes copy to heap after releasing
-    /// the buddy block back to the arena.
-    pub fn auto_spill(mut self) -> Self {
-        self.config.auto_spill = true;
-        self
-    }
-
+impl<Mode> BuddyArenaBuilder<Mode> {
     /// Set the initialization policy for allocated buffers.
     ///
     /// Default: [`InitPolicy::Uninit`](crate::InitPolicy::Uninit). When set
@@ -286,39 +292,6 @@ impl BuddyArenaBuilder {
     pub fn page_size(mut self, policy: crate::arena::PageSize) -> Self {
         self.config.page_size = policy;
         self
-    }
-
-    /// Build the buddy arena, prefaulting pages if a page size is configured.
-    pub fn build(self) -> Result<BuddyArena, BuildError> {
-        let page_size = self.config.page_size.resolve();
-        let arena = self.build_raw(
-            #[cfg(feature = "async-alloc")]
-            None,
-        )?;
-        if let Some(ps) = page_size {
-            crate::arena::prefault_region(arena.inner.ptr, arena.inner.total_size, ps);
-        }
-        Ok(arena)
-    }
-
-    /// Build the arena without prefaulting. Returns an
-    /// [`Unfaulted`](crate::Unfaulted) wrapper.
-    ///
-    /// See [`Unfaulted`](crate::Unfaulted) for the three consumption
-    /// paths: explicit fault, demand-fault, or direct allocate.
-    pub fn build_unfaulted(self) -> Result<crate::arena::Unfaulted<BuddyArena>, BuildError> {
-        let page_size = self.config.page_size.resolve();
-        let arena = self.build_raw(
-            #[cfg(feature = "async-alloc")]
-            None,
-        )?;
-        let total_size = arena.inner.total_size;
-        Ok(crate::arena::Unfaulted::new(
-            arena.inner.ptr,
-            total_size,
-            page_size,
-            arena,
-        ))
     }
 
     fn build_raw(
@@ -366,18 +339,36 @@ impl BuddyArenaBuilder {
             inner: Arc::new(inner),
         })
     }
-}
 
-#[cfg(feature = "async-alloc")]
-impl BuddyArenaBuilder {
-    /// Build an async-capable buddy arena using the default per-order notify waiter.
-    pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
-        let max_order = self.geometry.max_order();
-        self.build_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
+    fn build_buddy(self) -> Result<BuddyArena, BuildError> {
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_raw(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        if let Some(ps) = page_size {
+            crate::arena::prefault_region(arena.inner.ptr, arena.inner.total_size, ps);
+        }
+        Ok(arena)
     }
 
-    /// Build an async-capable buddy arena with a custom waiter policy.
-    pub fn build_async_with<W>(
+    fn build_buddy_unfaulted(self) -> Result<crate::arena::Unfaulted<BuddyArena>, BuildError> {
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_raw(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        let total_size = arena.inner.total_size;
+        Ok(crate::arena::Unfaulted::new(
+            arena.inner.ptr,
+            total_size,
+            page_size,
+            arena,
+        ))
+    }
+
+    #[cfg(feature = "async-alloc")]
+    fn build_buddy_async_with<W>(
         self,
         waiters: W,
     ) -> Result<crate::async_alloc::AsyncBuddyArena<W>, BuildError>
@@ -395,6 +386,132 @@ impl BuddyArenaBuilder {
         }
 
         Ok(crate::async_alloc::AsyncBuddyArena::new(arena, waiters))
+    }
+}
+
+impl BuddyArenaBuilder<crate::arena::Standard> {
+    /// Transition to [`AutoSpill`](crate::AutoSpill) mode. Overflow writes
+    /// copy to heap, freeing the buddy block.
+    ///
+    /// Mutually exclusive with
+    /// [`hazmat_raw_access()`](Self::hazmat_raw_access) at compile time.
+    pub fn auto_spill(self) -> BuddyArenaBuilder<crate::arena::AutoSpill> {
+        BuddyArenaBuilder {
+            geometry: self.geometry,
+            config: crate::arena::BuildConfig {
+                auto_spill: true,
+                ..self.config
+            },
+            _mode: std::marker::PhantomData,
+        }
+    }
+
+    /// Build the buddy arena, prefaulting pages if a page size is configured.
+    pub fn build(self) -> Result<BuddyArena, BuildError> {
+        self.build_buddy()
+    }
+
+    /// Build the arena without prefaulting. Returns an
+    /// [`Unfaulted`](crate::Unfaulted) wrapper.
+    ///
+    /// See [`Unfaulted`](crate::Unfaulted) for the three consumption
+    /// paths: explicit fault, demand-fault, or direct allocate.
+    pub fn build_unfaulted(self) -> Result<crate::arena::Unfaulted<BuddyArena>, BuildError> {
+        self.build_buddy_unfaulted()
+    }
+}
+
+impl BuddyArenaBuilder<crate::arena::AutoSpill> {
+    /// Build the buddy arena, prefaulting pages if a page size is configured.
+    pub fn build(self) -> Result<BuddyArena, BuildError> {
+        self.build_buddy()
+    }
+
+    /// Build the arena without prefaulting. Returns an
+    /// [`Unfaulted`](crate::Unfaulted) wrapper.
+    pub fn build_unfaulted(self) -> Result<crate::arena::Unfaulted<BuddyArena>, BuildError> {
+        self.build_buddy_unfaulted()
+    }
+}
+
+#[cfg(feature = "hazmat-raw-access")]
+impl BuddyArenaBuilder<crate::arena::Standard> {
+    /// Transition to [`HazmatRaw`](crate::HazmatRaw) mode.
+    ///
+    /// Mutually exclusive with [`auto_spill()`](Self::auto_spill) at compile
+    /// time.
+    pub fn hazmat_raw_access(self) -> BuddyArenaBuilder<crate::arena::HazmatRaw> {
+        BuddyArenaBuilder {
+            geometry: self.geometry,
+            config: self.config,
+            _mode: std::marker::PhantomData,
+        }
+    }
+}
+
+#[cfg(feature = "hazmat-raw-access")]
+impl BuddyArenaBuilder<crate::arena::HazmatRaw> {
+    /// Build the buddy arena, prefaulting pages if a page size is configured.
+    pub fn build(self) -> Result<crate::hazmat::RawBuddyArena, BuildError> {
+        self.build_buddy().map(crate::hazmat::RawBuddyArena)
+    }
+
+    /// Build the arena without prefaulting.
+    pub fn build_unfaulted(
+        self,
+    ) -> Result<crate::arena::Unfaulted<crate::hazmat::RawBuddyArena>, BuildError> {
+        let page_size = self.config.page_size.resolve();
+        let arena = self.build_raw(
+            #[cfg(feature = "async-alloc")]
+            None,
+        )?;
+        let total_size = arena.inner.total_size;
+        Ok(crate::arena::Unfaulted::new(
+            arena.inner.ptr,
+            total_size,
+            page_size,
+            crate::hazmat::RawBuddyArena(arena),
+        ))
+    }
+}
+
+#[cfg(feature = "async-alloc")]
+impl BuddyArenaBuilder<crate::arena::Standard> {
+    /// Build an async-capable buddy arena using the default per-order notify waiter.
+    pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
+        let max_order = self.geometry.max_order();
+        self.build_buddy_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
+    }
+
+    /// Build an async-capable buddy arena with a custom waiter policy.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::async_alloc::AsyncBuddyArena<W>, BuildError>
+    where
+        W: crate::async_alloc::BuddyWaiter,
+    {
+        self.build_buddy_async_with(waiters)
+    }
+}
+
+#[cfg(feature = "async-alloc")]
+impl BuddyArenaBuilder<crate::arena::AutoSpill> {
+    /// Build an async-capable buddy arena using the default per-order notify waiter.
+    pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
+        let max_order = self.geometry.max_order();
+        self.build_buddy_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
+    }
+
+    /// Build an async-capable buddy arena with a custom waiter policy.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::async_alloc::AsyncBuddyArena<W>, BuildError>
+    where
+        W: crate::async_alloc::BuddyWaiter,
+    {
+        self.build_buddy_async_with(waiters)
     }
 }
 
