@@ -111,6 +111,11 @@ description = "Run tests with all features enabled"
 depends = ["_doctor:base"]
 run = 'cargo test --all-features'
 
+[tasks."test:hazmat"]
+description = "Run tests with hazmat-raw-access feature"
+depends = ["_doctor:base", "_doctor:nextest"]
+run = 'cargo nextest run --features hazmat-raw-access'
+
 [tasks."test:cargo"]
 description = "Run tests with cargo test"
 depends = ["_doctor:base"]

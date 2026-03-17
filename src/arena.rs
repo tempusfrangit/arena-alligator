@@ -151,6 +151,19 @@ impl Unfaulted<FixedArena> {
     }
 }
 
+/// Typestate marker for the default builder mode.
+#[derive(Debug, Clone, Copy)]
+pub struct Standard;
+
+/// Typestate marker for auto-spill builder mode.
+#[derive(Debug, Clone, Copy)]
+pub struct AutoSpill;
+
+/// Typestate marker for hazmat raw-access builder mode.
+#[cfg(feature = "hazmat-raw-access")]
+#[derive(Debug, Clone, Copy)]
+pub struct HazmatRaw;
+
 /// Shared builder configuration for both arena types.
 pub(crate) struct BuildConfig {
     pub(crate) alignment: usize,

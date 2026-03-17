@@ -21,11 +21,12 @@ loom = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("hazmat-raw-access"))'] }
 
 [features]
 default = ["libc"]
 async-alloc = ["dep:tokio"]
+hazmat-raw-access = []
 
 [[bench]]
 name = "allocator"
