@@ -100,8 +100,8 @@ impl RawBuddyArena {
     /// The request rounds up to the next power-of-two multiple of
     /// [`min_block_size()`](BuddyArena::min_block_size).
     ///
-    /// Visible capacity follows the arena geometry. [`BuddyGeometry::exact()`]
-    /// exposes the full allocated block. [`BuddyGeometry::nearest()`]
+    /// Visible capacity follows the arena geometry. [`exact()`](crate::BuddyGeometry::exact)
+    /// exposes the full allocated block. [`nearest()`](crate::BuddyGeometry::nearest)
     /// caps visible capacity to `len` even when allocator slack is larger.
     /// [`InitPolicy::Zero`] clears the allocated block before it is returned.
     /// Dropping the region releases the block back to the arena.
