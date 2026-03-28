@@ -5,7 +5,7 @@
 //!
 //! Freezing a raw region returns ordinary [`bytes::Bytes`]. Clones,
 //! slices, and downstream `Bytes` helpers keep the arena backing
-//! allocation pinned.
+//! allocation pinned until the final reference drops.
 
 #[cfg(feature = "hazmat-raw-access")]
 mod raw_region;

@@ -16,7 +16,8 @@ use crate::sync::Arc;
 
 /// Hazmat raw-access wrapper around [`FixedArena`].
 ///
-/// Derefs to [`FixedArena`] for normal allocation and adds raw allocation.
+/// Derefs to [`FixedArena`] for normal allocation and adds
+/// [`raw_alloc()`](Self::raw_alloc).
 #[derive(Clone)]
 pub struct RawFixedArena(pub(crate) FixedArena);
 
@@ -36,8 +37,11 @@ impl fmt::Debug for RawFixedArena {
 impl RawFixedArena {
     /// Allocate a raw region from the arena.
     ///
-    /// Returns a [`RawRegion`] with direct pointer access to the slot.
-    /// Dropping the region releases the slot.
+    /// Returns a [`RawRegion`] with direct pointer access to one arena slot.
+    ///
+    /// The returned region exposes the slot's full visible capacity.
+    /// [`InitPolicy::Zero`] clears the slot before it is returned.
+    /// Dropping the region releases the slot back to the arena.
     pub fn raw_alloc(&self) -> Result<RawRegion, AllocError> {
         let inner = &self.0.inner;
         let Some(slot_idx) = inner.bitmap.try_alloc() else {
@@ -72,7 +76,8 @@ impl RawFixedArena {
 
 /// Hazmat raw-access wrapper around [`BuddyArena`].
 ///
-/// Derefs to [`BuddyArena`] for normal allocation and adds raw allocation.
+/// Derefs to [`BuddyArena`] for normal allocation and adds
+/// [`raw_alloc()`](Self::raw_alloc).
 #[derive(Clone)]
 pub struct RawBuddyArena(pub(crate) BuddyArena);
 
@@ -92,11 +97,14 @@ impl fmt::Debug for RawBuddyArena {
 impl RawBuddyArena {
     /// Allocate a raw region from the buddy arena.
     ///
-    /// Block size is rounded up to the next power-of-two multiple of
-    /// [`min_block_size()`](BuddyArena::min_block_size). Visible capacity
-    /// is capped to `len` when the arena uses
-    /// [`BuddyGeometry::nearest()`](crate::BuddyGeometry::nearest).
-    /// Dropping the region releases the block.
+    /// The request rounds up to the next power-of-two multiple of
+    /// [`min_block_size()`](BuddyArena::min_block_size).
+    ///
+    /// Visible capacity follows the arena geometry. [`BuddyGeometry::exact()`]
+    /// exposes the full allocated block. [`BuddyGeometry::nearest()`]
+    /// caps visible capacity to `len` even when allocator slack is larger.
+    /// [`InitPolicy::Zero`] clears the allocated block before it is returned.
+    /// Dropping the region releases the block back to the arena.
     pub fn raw_alloc(&self, len: NonZeroUsize) -> Result<RawRegion, AllocError> {
         let arena = &self.0;
         let inner = &arena.inner;
@@ -198,7 +206,7 @@ impl std::error::Error for RawFreezeError {}
 /// guarantees the frozen range is initialized.
 ///
 /// `freeze` returns ordinary [`Bytes`]. Clones, slices, and extension
-/// traits on the result keep the arena slot pinned.
+/// traits on the result keep the backing allocation pinned.
 pub struct RawRegion {
     owner: ManuallyDrop<ArenaRef>,
     allocation: AllocationKind,
@@ -270,8 +278,8 @@ impl RawRegion {
 
     /// Freeze a byte range into immutable [`Bytes`].
     ///
-    /// Consuming. The slot or block returns to the arena when the last
-    /// `Bytes` clone or slice drops. Common prefix case: `freeze(0..len)`.
+    /// Consumes the region. The slot or block returns to the arena when the
+    /// last `Bytes` clone or slice drops. Common prefix case: `freeze(0..len)`.
     ///
     /// # Safety
     ///
