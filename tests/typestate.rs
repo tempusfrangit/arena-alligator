@@ -1,4 +1,5 @@
 #[cfg(feature = "hazmat-raw-access")]
+#[cfg(not(miri))]
 #[test]
 fn typestate_exclusion_compile_fail() {
     let t = trybuild::TestCases::new();
