@@ -549,7 +549,90 @@ mod tests {
         let r2 = arena.raw_alloc(nz(2048)).unwrap();
         drop(r1);
         drop(r2);
-        // Full arena should be available again
         assert!(arena.raw_alloc(nz(4096)).is_ok());
+    }
+
+    // --- Metrics and InitPolicy tests ---
+
+    use crate::InitPolicy;
+
+    #[test]
+    fn fixed_raw_alloc_metrics_track_lifecycle() {
+        let arena = FixedArena::with_slot_capacity(nz(2), nz(64))
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let raw = arena.raw_alloc().unwrap();
+        let m = arena.metrics();
+        assert_eq!(m.allocations_ok, 1);
+        assert_eq!(m.bytes_live, 64);
+
+        drop(raw);
+        let m = arena.metrics();
+        assert_eq!(m.frees, 1);
+        assert_eq!(m.bytes_live, 0);
+    }
+
+    #[test]
+    fn fixed_raw_alloc_metrics_track_freeze() {
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let mut raw = arena.raw_alloc().unwrap();
+        unsafe { raw.as_mut_ptr().write_bytes(0, 8) };
+        let bytes = unsafe { raw.freeze(0..8) }.unwrap();
+
+        let m = arena.metrics();
+        assert_eq!(m.frozen, 1);
+        assert_eq!(m.frees, 0);
+        assert_eq!(m.bytes_live, 64);
+
+        drop(bytes);
+        let m = arena.metrics();
+        assert_eq!(m.frees, 1);
+        assert_eq!(m.bytes_live, 0);
+    }
+
+    #[test]
+    fn fixed_raw_alloc_metrics_track_failure() {
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let _raw = arena.raw_alloc().unwrap();
+        let _ = arena.raw_alloc();
+
+        let m = arena.metrics();
+        assert_eq!(m.allocations_ok, 1);
+        assert_eq!(m.allocations_failed, 1);
+    }
+
+    #[test]
+    fn fixed_raw_alloc_zero_policy_zeroes_memory() {
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .init_policy(InitPolicy::Zero)
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let raw = arena.raw_alloc().unwrap();
+        let slice = raw.as_uninit_slice();
+        for byte in slice {
+            assert_eq!(unsafe { byte.assume_init() }, 0);
+        }
+    }
+
+    #[test]
+    fn buddy_raw_alloc_zero_policy_zeroes_memory() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .init_policy(InitPolicy::Zero)
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let raw = arena.raw_alloc(nz(512)).unwrap();
+        let slice = raw.as_uninit_slice();
+        for byte in &slice[..512] {
+            assert_eq!(unsafe { byte.assume_init() }, 0);
+        }
     }
 }
