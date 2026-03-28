@@ -1,6 +1,7 @@
 use std::fmt;
 use std::mem::ManuallyDrop;
 use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::ops::Range;
 
 use bytes::Bytes;
@@ -85,6 +86,67 @@ impl std::ops::Deref for RawBuddyArena {
 impl fmt::Debug for RawBuddyArena {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("RawBuddyArena").field(&self.0).finish()
+    }
+}
+
+impl RawBuddyArena {
+    /// Allocate a raw region from the buddy arena.
+    ///
+    /// Block size is rounded up to the next power-of-two multiple of
+    /// [`min_block_size()`](BuddyArena::min_block_size). Visible capacity
+    /// is capped to `len` when the arena uses
+    /// [`BuddyGeometry::nearest()`](crate::BuddyGeometry::nearest).
+    /// Dropping the region releases the block.
+    pub fn raw_alloc(&self, len: NonZeroUsize) -> Result<RawRegion, AllocError> {
+        let arena = &self.0;
+        let inner = &arena.inner;
+
+        let target_order = arena.order_for_request(len.get()).ok_or_else(|| {
+            inner.metrics.record_alloc_failure();
+            AllocError::ArenaFull
+        })?;
+
+        let (order, block_idx) = arena
+            .try_allocate_from_summary(target_order)
+            .or_else(|| arena.try_allocate_from_full_scan(target_order))
+            .ok_or_else(|| {
+                inner.metrics.record_alloc_failure();
+                AllocError::ArenaFull
+            })?;
+
+        let (final_order, final_block_idx) = arena.split_down(order, block_idx, target_order);
+        let block_size = arena.block_size(final_order);
+        let offset = arena.block_offset(final_order, final_block_idx);
+
+        match inner.init_policy {
+            InitPolicy::Zero => {
+                // SAFETY: ptr+offset..ptr+offset+block_size is within the arena
+                // allocation and exclusively owned by this block (bitmap claim above).
+                unsafe {
+                    inner.ptr.add(offset).write_bytes(0, block_size);
+                }
+            }
+            InitPolicy::Uninit => {}
+        }
+
+        inner.metrics.record_alloc_success(block_size);
+
+        let user_capacity = if inner.cap_capacity {
+            len.get().min(block_size)
+        } else {
+            block_size
+        };
+
+        Ok(RawRegion::new(
+            ArenaRef::Buddy(Arc::clone(inner)),
+            AllocationKind::Buddy {
+                order: final_order,
+                block_idx: final_block_idx,
+            },
+            inner.ptr,
+            offset,
+            user_capacity,
+        ))
     }
 }
 
@@ -265,10 +327,14 @@ impl Drop for RawRegion {
 mod tests {
     use std::num::NonZeroUsize;
 
-    use crate::FixedArena;
+    use crate::{BuddyArena, BuddyGeometry, FixedArena};
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
+    }
+
+    fn buddy_geo() -> BuddyGeometry {
+        BuddyGeometry::exact(nz(4096), nz(512)).unwrap()
     }
 
     #[test]
@@ -330,6 +396,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::reversed_empty_ranges)]
     fn raw_region_freeze_inverted_range() {
         let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
             .hazmat_raw_access()
@@ -397,5 +464,92 @@ mod tests {
         assert_eq!(&hello[..], b"hello");
         drop(hello);
         assert!(arena.raw_alloc().is_ok());
+    }
+
+    // --- Buddy raw_alloc tests ---
+
+    #[test]
+    fn buddy_raw_region_capacity() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let raw = arena.raw_alloc(nz(512)).unwrap();
+        assert_eq!(raw.capacity(), 512);
+    }
+
+    #[test]
+    fn buddy_raw_region_rounds_up() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let raw = arena.raw_alloc(nz(700)).unwrap();
+        // exact geometry exposes full block capacity
+        assert_eq!(raw.capacity(), 1024);
+    }
+
+    #[test]
+    fn buddy_raw_region_cap_capacity() {
+        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let arena = BuddyArena::builder(geo)
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let raw = arena.raw_alloc(nz(700)).unwrap();
+        assert_eq!(raw.capacity(), 700);
+    }
+
+    #[test]
+    fn buddy_raw_region_freeze_prefix() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let mut raw = arena.raw_alloc(nz(512)).unwrap();
+        let ptr = raw.as_mut_ptr();
+        unsafe { std::ptr::copy_nonoverlapping(b"buddy".as_ptr(), ptr, 5) };
+        let bytes = unsafe { raw.freeze(0..5) }.unwrap();
+        assert_eq!(&bytes[..], b"buddy");
+    }
+
+    #[test]
+    fn buddy_raw_region_drop_releases_block() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let raw = arena.raw_alloc(nz(4096)).unwrap();
+        assert!(arena.raw_alloc(nz(512)).is_err());
+        drop(raw);
+        assert!(arena.raw_alloc(nz(512)).is_ok());
+    }
+
+    #[test]
+    fn buddy_raw_region_freeze_releases_on_bytes_drop() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let mut raw = arena.raw_alloc(nz(4096)).unwrap();
+        unsafe { raw.as_mut_ptr().write_bytes(0xAB, 8) };
+        let bytes = unsafe { raw.freeze(0..8) }.unwrap();
+        assert!(arena.raw_alloc(nz(512)).is_err());
+        drop(bytes);
+        assert!(arena.raw_alloc(nz(512)).is_ok());
+    }
+
+    #[test]
+    fn buddy_raw_region_coalesces_on_drop() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+        let r1 = arena.raw_alloc(nz(2048)).unwrap();
+        let r2 = arena.raw_alloc(nz(2048)).unwrap();
+        drop(r1);
+        drop(r2);
+        // Full arena should be available again
+        assert!(arena.raw_alloc(nz(4096)).is_ok());
     }
 }

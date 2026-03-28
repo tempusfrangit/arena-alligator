@@ -556,9 +556,7 @@ impl FixedArenaBuilder<HazmatRaw> {
     }
 
     /// Build the arena without prefaulting.
-    pub fn build_unfaulted(
-        self,
-    ) -> Result<Unfaulted<crate::hazmat::RawFixedArena>, BuildError> {
+    pub fn build_unfaulted(self) -> Result<Unfaulted<crate::hazmat::RawFixedArena>, BuildError> {
         let page_size = self.config.page_size.resolve();
         let arena = self.build_inner(
             #[cfg(feature = "async-alloc")]

@@ -183,12 +183,15 @@ impl BuddyArena {
         Some(size.trailing_zeros() as usize - self.inner.min_block_size.trailing_zeros() as usize)
     }
 
-    fn try_allocate_from_summary(&self, target_order: usize) -> Option<(usize, usize)> {
+    pub(crate) fn try_allocate_from_summary(&self, target_order: usize) -> Option<(usize, usize)> {
         let summary = self.inner.nonempty_orders.load(Ordering::Acquire);
         self.try_allocate_from_orders(target_order, Some(summary))
     }
 
-    fn try_allocate_from_full_scan(&self, target_order: usize) -> Option<(usize, usize)> {
+    pub(crate) fn try_allocate_from_full_scan(
+        &self,
+        target_order: usize,
+    ) -> Option<(usize, usize)> {
         self.try_allocate_from_orders(target_order, None)
     }
 
@@ -211,7 +214,7 @@ impl BuddyArena {
         None
     }
 
-    fn split_down(
+    pub(crate) fn split_down(
         &self,
         mut order: usize,
         mut block_idx: usize,
@@ -240,11 +243,11 @@ impl BuddyArena {
         (order, block_idx)
     }
 
-    fn block_size(&self, order: usize) -> usize {
+    pub(crate) fn block_size(&self, order: usize) -> usize {
         self.inner.min_block_size << order
     }
 
-    fn block_offset(&self, order: usize, block_idx: usize) -> usize {
+    pub(crate) fn block_offset(&self, order: usize, block_idx: usize) -> usize {
         block_idx * self.block_size(order)
     }
 }

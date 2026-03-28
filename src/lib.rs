@@ -90,8 +90,8 @@ mod async_alloc;
 #[cfg(feature = "hazmat-raw-access")]
 pub mod hazmat;
 
-pub use arena::{FixedArena, FixedArenaBuilder, InitPolicy, PageSize, Unfaulted};
 pub use arena::{AutoSpill, Standard};
+pub use arena::{FixedArena, FixedArenaBuilder, InitPolicy, PageSize, Unfaulted};
 
 #[cfg(feature = "hazmat-raw-access")]
 pub use arena::HazmatRaw;
