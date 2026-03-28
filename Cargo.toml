@@ -41,5 +41,13 @@ required-features = ["async-alloc"]
 name = "treiber_waker"
 required-features = ["async-alloc"]
 
+[[example]]
+name = "hazmat_fixed_raw"
+required-features = ["hazmat-raw-access"]
+
+[[example]]
+name = "hazmat_buddy_raw"
+required-features = ["hazmat-raw-access"]
+
 [package.metadata.docs.rs]
 all-features = true

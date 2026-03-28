@@ -111,6 +111,53 @@ let arena = FixedArena::with_slot_capacity(
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Hazmat raw access
+
+For protocols or layouts that need direct pointer access, enable the
+`hazmat-raw-access` feature and opt in per arena builder with
+`.hazmat_raw_access()`.
+
+`RawRegion` bypasses `Buffer` and `BufMut`. You write through raw pointers or
+`MaybeUninit<u8>` slices, then call `unsafe freeze(range)` when the frozen range
+is fully initialized.
+
+Returned `Bytes` are ordinary `bytes::Bytes`: clones and slices keep the arena
+backing allocation pinned until every reference drops. Keep this off the default
+path unless you need the extra control.
+
+```toml
+[dependencies]
+arena-alligator = { version = "0.6", features = ["hazmat-raw-access"] }
+```
+
+```rust
+# use std::num::NonZeroUsize;
+# use arena_alligator::FixedArena;
+fn nz(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).unwrap()
+}
+
+let arena = FixedArena::with_slot_capacity(nz(4), nz(128))
+    .hazmat_raw_access()
+    .build()?;
+
+let mut raw = arena.raw_alloc()?;
+let ptr = raw.as_mut_ptr();
+
+unsafe {
+    let len = 5u32.to_le_bytes();
+    std::ptr::copy_nonoverlapping(len.as_ptr(), ptr, 4);
+    std::ptr::copy_nonoverlapping(b"hello".as_ptr(), ptr.add(4), 5);
+}
+
+let payload = unsafe { raw.freeze(4..9) }?;
+assert_eq!(&payload[..], b"hello");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+See [`docs/hazmat.md`](docs/hazmat.md) for the sharp edges and the visibility
+rules for buddy raw allocations.
+
 ## Async allocation
 
 With the `async-alloc` feature, both arena types support `allocate_async()`. The task waits until capacity becomes available instead of busy-looping or falling back to the heap.
@@ -173,6 +220,8 @@ Start with `fixed_buffer`, then run `buddy_buffer` for the variable-size path.
 | [`fixed_buffer`](examples/fixed_buffer.rs) | Allocate, write, freeze, and send across threads |
 | [`buddy_buffer`](examples/buddy_buffer.rs) | Variable-size allocations with split and coalesce |
 | [`spill_buffer`](examples/spill_buffer.rs) | Auto-spill to heap when a buffer outgrows slot capacity |
+| [`hazmat_fixed_raw`](examples/hazmat_fixed_raw.rs) | Raw fixed-slot access with header/payload freeze |
+| [`hazmat_buddy_raw`](examples/hazmat_buddy_raw.rs) | Raw buddy access with visible-capacity behavior |
 | [`async_alloc`](examples/async_alloc.rs) | Wait for capacity with `allocate_async()` |
 | [`treiber_waker`](examples/treiber_waker.rs) | Custom `Waiter` impl using a lock-free Treiber stack |
 
