@@ -87,7 +87,14 @@ mod sync;
 #[cfg(feature = "async-alloc")]
 mod async_alloc;
 
+#[cfg(feature = "hazmat-raw-access")]
+pub mod hazmat;
+
+pub use arena::{AutoSpill, Standard};
 pub use arena::{FixedArena, FixedArenaBuilder, InitPolicy, PageSize, Unfaulted};
+
+#[cfg(feature = "hazmat-raw-access")]
+pub use arena::HazmatRaw;
 pub use buddy::{BuddyArena, BuddyArenaBuilder};
 pub use buffer::Buffer;
 pub use error::{AllocError, BufferFullError, BuildError};

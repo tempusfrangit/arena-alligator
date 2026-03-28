@@ -1,0 +1,13 @@
+error[E0599]: no method named `hazmat_raw_access` found for struct `BuddyArenaBuilder<AutoSpill>` in the current scope
+  --> tests/compile_fail/buddy_auto_spill_then_hazmat.rs:11:10
+   |
+ 9 |       let _ = BuddyArena::builder(geo)
+   |  _____________-
+10 | |         .auto_spill()
+11 | |         .hazmat_raw_access();
+   | |         -^^^^^^^^^^^^^^^^^ method not found in `BuddyArenaBuilder<AutoSpill>`
+   | |_________|
+   |
+   |
+   = note: the method was found for
+           - `BuddyArenaBuilder`

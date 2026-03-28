@@ -111,6 +111,11 @@ description = "Run tests with all features enabled"
 depends = ["_doctor:base"]
 run = 'cargo test --all-features'
 
+[tasks."test:hazmat"]
+description = "Run tests with hazmat-raw-access feature"
+depends = ["_doctor:base", "_doctor:nextest"]
+run = 'cargo nextest run --features hazmat-raw-access'
+
 [tasks."test:cargo"]
 description = "Run tests with cargo test"
 depends = ["_doctor:base"]
@@ -160,7 +165,7 @@ depends = ["_doctor:base"]
 run = '''
 #!/usr/bin/env bash
 set -euo pipefail
-for ex in fixed_buffer buddy_buffer spill_buffer async_alloc treiber_waker; do
+for ex in fixed_buffer buddy_buffer spill_buffer hazmat_fixed_raw hazmat_buddy_raw async_alloc treiber_waker; do
   echo "==> $ex"
   cargo run --all-features --example "$ex"
 done

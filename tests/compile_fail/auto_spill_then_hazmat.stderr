@@ -1,0 +1,15 @@
+error[E0599]: no method named `hazmat_raw_access` found for struct `FixedArenaBuilder<AutoSpill>` in the current scope
+  --> tests/compile_fail/auto_spill_then_hazmat.rs:10:10
+   |
+ 5 |       let _ = FixedArena::with_slot_capacity(
+   |  _____________-
+ 6 | |         NonZeroUsize::new(4).unwrap(),
+ 7 | |         NonZeroUsize::new(64).unwrap(),
+...  |
+10 | |         .hazmat_raw_access();
+   | |         -^^^^^^^^^^^^^^^^^ method not found in `FixedArenaBuilder<AutoSpill>`
+   | |_________|
+   |
+   |
+   = note: the method was found for
+           - `FixedArenaBuilder`

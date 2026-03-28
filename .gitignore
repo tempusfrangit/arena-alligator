@@ -30,6 +30,7 @@
 !/tests/
 !/tests/**/
 !/tests/**/*.rs
+!/tests/**/*.stderr
 !/benches/
 !/benches/**/
 !/benches/**/*.rs

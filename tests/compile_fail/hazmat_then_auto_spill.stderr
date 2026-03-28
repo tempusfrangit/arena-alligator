@@ -1,0 +1,15 @@
+error[E0599]: no method named `auto_spill` found for struct `FixedArenaBuilder<HazmatRaw>` in the current scope
+  --> tests/compile_fail/hazmat_then_auto_spill.rs:10:10
+   |
+ 5 |       let _ = FixedArena::with_slot_capacity(
+   |  _____________-
+ 6 | |         NonZeroUsize::new(4).unwrap(),
+ 7 | |         NonZeroUsize::new(64).unwrap(),
+...  |
+10 | |         .auto_spill();
+   | |         -^^^^^^^^^^ method not found in `FixedArenaBuilder<HazmatRaw>`
+   | |_________|
+   |
+   |
+   = note: the method was found for
+           - `FixedArenaBuilder`

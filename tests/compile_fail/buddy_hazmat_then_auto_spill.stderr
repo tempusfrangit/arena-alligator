@@ -1,0 +1,13 @@
+error[E0599]: no method named `auto_spill` found for struct `BuddyArenaBuilder<HazmatRaw>` in the current scope
+  --> tests/compile_fail/buddy_hazmat_then_auto_spill.rs:11:10
+   |
+ 9 |       let _ = BuddyArena::builder(geo)
+   |  _____________-
+10 | |         .hazmat_raw_access()
+11 | |         .auto_spill();
+   | |         -^^^^^^^^^^ method not found in `BuddyArenaBuilder<HazmatRaw>`
+   | |_________|
+   |
+   |
+   = note: the method was found for
+           - `BuddyArenaBuilder`
