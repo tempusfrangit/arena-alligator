@@ -85,17 +85,23 @@ pub(crate) fn zeroize_region(ptr: *mut u8, len: usize) {
     zeroize::Zeroize::zeroize(slice);
 }
 
-/// Initialization policy applied to each buffer on allocate.
+/// Initialization policy for arena memory.
 ///
-/// Controls whether arena memory is initialized before it is handed to the
-/// caller. The default ([`Uninit`](Self::Uninit)) leaves memory as-is for
-/// maximum throughput.
+/// Controls whether arena memory is zeroed. The default
+/// ([`Uninit`](Self::Uninit)) leaves memory as-is for maximum throughput.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InitPolicy {
     /// Leave memory uninitialized (default).
     #[default]
     Uninit,
-    /// Zero-fill the allocation region before returning the buffer.
+    /// Zero-fill memory on return to the arena and on first allocation.
+    ///
+    /// On return: the full slot or block is zeroed before it is marked free.
+    /// On allocation: cold memory (never returned) is zeroed. Memory that
+    /// has been through a return-scrub cycle is no longer cold and the
+    /// alloc-path zero is skipped.
+    ///
+    /// Uses [`zeroize`] for compiler-guaranteed zeroing.
     Zero,
 }
 

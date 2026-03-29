@@ -97,7 +97,7 @@ let _bytes = buf.freeze();
 
 By default, arena allocations use `InitPolicy::Uninit`. That follows Rust's usual high-performance model for writable capacity: newly allocated bytes are not zeroed, and only written bytes become part of the frozen `Bytes`.
 
-For security-sensitive or data-hygiene-sensitive workloads, `InitPolicy::Zero` clears reused arena memory before handing it to a writer. That trades throughput for stronger "new allocation starts zeroed" behavior.
+For security-sensitive workloads, `InitPolicy::Zero` zeroes memory on return to the arena and on first allocation. Returned slots and blocks are scrubbed before being marked free, preventing data leaks between callers. All zeroing uses the `zeroize` crate (compiler-guaranteed not elided).
 
 ```rust
 # use std::num::NonZeroUsize;

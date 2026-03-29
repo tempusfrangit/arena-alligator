@@ -53,9 +53,13 @@
 //! zero-filled, and only the bytes written become visible in the
 //! frozen [`Bytes`](bytes::Bytes).
 //!
-//! [`InitPolicy::Zero`] clears reused arena memory before it is handed back to
-//! a writer. That adds work on every allocation in exchange for a stronger
-//! zero-on-allocate guarantee.
+//! [`InitPolicy::Zero`] zeroes memory on return to the arena and on first
+//! allocation. Returned slots and blocks are scrubbed before being marked
+//! free, preventing data leaks between callers. First allocations (cold
+//! memory, never returned) are zeroed on the alloc path. Memory that has
+//! been through a return-scrub cycle is no longer cold and the alloc-path
+//! zero is skipped. All zeroing uses the [`zeroize`] crate
+//! (compiler-guaranteed not elided).
 //!
 //! # Frozen slice retention
 //!
