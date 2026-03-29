@@ -22,6 +22,10 @@ pub(crate) struct BuddyArenaInner {
     pub(crate) cap_capacity: bool,
     pub(crate) init_policy: crate::arena::InitPolicy,
     pub(crate) metrics: MetricsState,
+    /// Tracks which order-0 regions have been return-scrubbed. Only present
+    /// when `init_policy == Zero`. Write-once: return path sets bits, alloc
+    /// path only reads.
+    pub(crate) zeroed_bitmap: Option<AtomicBitmap>,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::BuddyWakeHandle>,
 }
@@ -129,10 +133,16 @@ impl BuddyArena {
 
         match self.inner.init_policy {
             crate::arena::InitPolicy::Zero => {
-                // SAFETY: ptr+offset..ptr+offset+block_size is within the arena allocation
-                // and exclusively owned by this block (bitmap claim enforced above).
-                unsafe {
-                    crate::arena::zeroize_region(self.inner.ptr.add(offset), block_size);
+                if let Some(ref zeroed_bm) = self.inner.zeroed_bitmap {
+                    let order0_start = final_block_idx * (1 << final_order);
+                    let order0_end = order0_start + (1 << final_order);
+                    if !zeroed_bm.all_set_in_range(order0_start, order0_end) {
+                        // SAFETY: ptr+offset..ptr+offset+block_size is within the arena
+                        // allocation and exclusively owned (bitmap claim above).
+                        unsafe {
+                            crate::arena::zeroize_region(self.inner.ptr.add(offset), block_size);
+                        }
+                    }
                 }
             }
             crate::arena::InitPolicy::Uninit => {}
@@ -322,6 +332,12 @@ impl<Mode> BuddyArenaBuilder<Mode> {
         }
         free_bitmaps[max_order].free(0);
 
+        let order0_count = blocks_at_order(max_order, 0);
+        let zeroed_bitmap = match self.config.init_policy {
+            crate::arena::InitPolicy::Zero => Some(AtomicBitmap::new_empty(order0_count)),
+            crate::arena::InitPolicy::Uninit => None,
+        };
+
         let inner = BuddyArenaInner {
             ptr,
             layout,
@@ -334,6 +350,7 @@ impl<Mode> BuddyArenaBuilder<Mode> {
             cap_capacity: self.geometry.cap_capacity(),
             init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
+            zeroed_bitmap,
             #[cfg(feature = "async-alloc")]
             wake_handle: waker,
         };
@@ -524,6 +541,20 @@ impl BuddyArenaInner {
     }
 
     pub(crate) fn release_block(&self, mut order: usize, mut block_idx: usize) {
+        if self.init_policy == crate::arena::InitPolicy::Zero {
+            let block_size = self.block_size(order);
+            let offset = block_idx * block_size;
+            // SAFETY: block is exclusively owned (not yet freed). ptr+offset is valid.
+            unsafe {
+                crate::arena::zeroize_region(self.ptr.add(offset), block_size);
+            }
+            if let Some(ref zeroed_bm) = self.zeroed_bitmap {
+                let order0_start = block_idx * (1 << order);
+                let order0_end = order0_start + (1 << order);
+                zeroed_bm.set_range(order0_start, order0_end);
+            }
+        }
+
         while order < self.max_order {
             let buddy_idx = block_idx ^ 1;
             if !self.free_bitmaps[order].try_claim_exact(buddy_idx) {
@@ -796,5 +827,48 @@ mod tests {
         let _buf = arena.allocate(nz(700)).unwrap();
         let m = arena.metrics();
         assert_eq!(m.bytes_live, 1024);
+    }
+
+    #[test]
+    fn zero_policy_zeroes_on_return() {
+        use bytes::BufMut;
+
+        let arena = BuddyArena::builder(geo(4096, 512))
+            .init_policy(crate::arena::InitPolicy::Zero)
+            .page_size(crate::arena::PageSize::Unknown)
+            .build()
+            .unwrap();
+
+        let mut buf = arena.allocate(nz(512)).unwrap();
+        buf.put_slice(&[0xAB; 512]);
+        let bytes = buf.freeze();
+        drop(bytes);
+
+        let buf = arena.allocate(nz(512)).unwrap();
+        let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 512) };
+        assert!(
+            block.iter().all(|&b| b == 0),
+            "block should be zeroed from return path"
+        );
+    }
+
+    #[test]
+    fn zero_policy_higher_order_checks_order0_bits() {
+        let arena = BuddyArena::builder(geo(4096, 512))
+            .init_policy(crate::arena::InitPolicy::Zero)
+            .page_size(crate::arena::PageSize::Unknown)
+            .build()
+            .unwrap();
+
+        // Allocate min-block, return it (zeroes + sets 1 order-0 bit)
+        let buf = arena.allocate(nz(512)).unwrap();
+        drop(buf);
+
+        // Allocate a larger block that spans multiple order-0 regions.
+        // Some order-0 bits are set (returned), some are not (cold from split siblings).
+        // The alloc path should zeroize because not all bits are set.
+        let buf = arena.allocate(nz(4096)).unwrap();
+        let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 4096) };
+        assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
     }
 }
