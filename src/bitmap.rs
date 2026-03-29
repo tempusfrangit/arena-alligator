@@ -147,6 +147,91 @@ impl AtomicBitmap {
         total
     }
 
+    /// Check if all bits in `start..end` are set (1 = set).
+    ///
+    /// Returns `true` for empty ranges (`start == end`).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn all_set_in_range(&self, start: usize, end: usize) -> bool {
+        debug_assert!(end <= self.slot_count);
+        debug_assert!(start <= end);
+        if start == end {
+            return true;
+        }
+
+        let first_word = start / BITS_PER_WORD;
+        let last_word = (end - 1) / BITS_PER_WORD;
+
+        if first_word == last_word {
+            let mask = range_mask(start % BITS_PER_WORD, end - first_word * BITS_PER_WORD);
+            return self.words[first_word].0.load(Ordering::Acquire) & mask == mask;
+        }
+
+        // First partial word
+        let first_bit = start % BITS_PER_WORD;
+        let first_mask = !((1 as Word).wrapping_shl(first_bit as u32) - 1);
+        if self.words[first_word].0.load(Ordering::Acquire) & first_mask != first_mask {
+            return false;
+        }
+
+        // Full words in the middle
+        for w in (first_word + 1)..last_word {
+            if self.words[w].0.load(Ordering::Acquire) != Word::MAX {
+                return false;
+            }
+        }
+
+        // Last partial word
+        let last_bit = end - last_word * BITS_PER_WORD;
+        let last_mask = if last_bit >= BITS_PER_WORD {
+            Word::MAX
+        } else {
+            (1 as Word).wrapping_shl(last_bit as u32) - 1
+        };
+        self.words[last_word].0.load(Ordering::Acquire) & last_mask == last_mask
+    }
+
+    /// Set all bits in `start..end`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn set_range(&self, start: usize, end: usize) {
+        debug_assert!(end <= self.slot_count);
+        debug_assert!(start <= end);
+        if start == end {
+            return;
+        }
+
+        let first_word = start / BITS_PER_WORD;
+        let last_word = (end - 1) / BITS_PER_WORD;
+
+        if first_word == last_word {
+            let mask = range_mask(start % BITS_PER_WORD, end - first_word * BITS_PER_WORD);
+            self.words[first_word].0.fetch_or(mask, Ordering::Release);
+            return;
+        }
+
+        // First partial word
+        let first_bit = start % BITS_PER_WORD;
+        let first_mask = !((1 as Word).wrapping_shl(first_bit as u32) - 1);
+        self.words[first_word]
+            .0
+            .fetch_or(first_mask, Ordering::Release);
+
+        // Full words in the middle
+        for w in (first_word + 1)..last_word {
+            self.words[w].0.fetch_or(Word::MAX, Ordering::Release);
+        }
+
+        // Last partial word
+        let last_bit = end - last_word * BITS_PER_WORD;
+        let last_mask = if last_bit >= BITS_PER_WORD {
+            Word::MAX
+        } else {
+            (1 as Word).wrapping_shl(last_bit as u32) - 1
+        };
+        self.words[last_word]
+            .0
+            .fetch_or(last_mask, Ordering::Release);
+    }
+
     /// Attempt to claim one free bit from a specific word.
     ///
     /// Loops until either a bit is successfully claimed or the word is empty.
@@ -171,6 +256,19 @@ impl AtomicBitmap {
             }
         }
     }
+}
+
+/// Build a mask for bits `start_bit..end_bit` within a single word.
+#[cfg_attr(not(test), allow(dead_code))]
+fn range_mask(start_bit: usize, end_bit: usize) -> Word {
+    debug_assert!(start_bit <= end_bit);
+    debug_assert!(end_bit <= BITS_PER_WORD);
+    let full = if end_bit >= BITS_PER_WORD {
+        Word::MAX
+    } else {
+        (1 as Word).wrapping_shl(end_bit as u32) - 1
+    };
+    full & !((1 as Word).wrapping_shl(start_bit as u32) - 1)
 }
 
 #[cfg(test)]
@@ -399,6 +497,68 @@ mod tests {
         }
         assert_eq!(count, 7168);
     }
+
+    #[test]
+    fn all_set_in_range_empty_bitmap() {
+        let bm = AtomicBitmap::new_empty(128);
+        assert!(!bm.all_set_in_range(0, 4));
+    }
+
+    #[test]
+    fn all_set_in_range_full_bitmap() {
+        let bm = AtomicBitmap::new(128);
+        assert!(bm.all_set_in_range(0, 4));
+        assert!(bm.all_set_in_range(60, 68)); // spans word boundary
+        assert!(bm.all_set_in_range(0, 128));
+    }
+
+    #[test]
+    fn all_set_in_range_partial() {
+        let bm = AtomicBitmap::new(128);
+        bm.try_alloc(); // clears one bit
+        assert!(!bm.all_set_in_range(0, 128));
+    }
+
+    #[test]
+    fn set_range_then_check() {
+        let bm = AtomicBitmap::new_empty(128);
+        bm.set_range(4, 8);
+        assert!(bm.all_set_in_range(4, 8));
+        assert!(!bm.all_set_in_range(0, 4));
+        assert!(!bm.all_set_in_range(0, 128));
+    }
+
+    #[test]
+    fn set_range_spans_word_boundary() {
+        let bm = AtomicBitmap::new_empty(128);
+        bm.set_range(60, 68);
+        assert!(bm.all_set_in_range(60, 68));
+        assert!(!bm.all_set_in_range(59, 68));
+        assert!(!bm.all_set_in_range(60, 69));
+    }
+
+    #[test]
+    fn set_range_single_bit() {
+        let bm = AtomicBitmap::new_empty(64);
+        bm.set_range(7, 8);
+        assert!(bm.is_free(7));
+        assert!(!bm.is_free(6));
+        assert!(!bm.is_free(8));
+    }
+
+    #[test]
+    fn all_set_in_range_single_bit() {
+        let bm = AtomicBitmap::new(64);
+        assert!(bm.all_set_in_range(0, 1));
+        bm.try_alloc();
+        assert!(bm.all_set_in_range(32, 33));
+    }
+
+    #[test]
+    fn all_set_in_range_empty_range() {
+        let bm = AtomicBitmap::new_empty(64);
+        assert!(bm.all_set_in_range(5, 5));
+    }
 }
 
 #[cfg(all(test, loom))]
@@ -589,6 +749,52 @@ mod loom_tests {
             t2.join().unwrap();
 
             assert_eq!(bitmap.free_count(), 2);
+        });
+    }
+
+    #[test]
+    fn loom_set_range_vs_all_set_in_range() {
+        loom::model(|| {
+            let bitmap = Arc::new(AtomicBitmap::new_empty(4));
+
+            let a = Arc::clone(&bitmap);
+            let b = Arc::clone(&bitmap);
+
+            let t1 = thread::spawn(move || {
+                a.set_range(0, 2);
+            });
+
+            let t2 = thread::spawn(move || {
+                b.set_range(2, 4);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            assert!(bitmap.all_set_in_range(0, 4));
+        });
+    }
+
+    #[test]
+    fn loom_set_range_concurrent_overlap() {
+        loom::model(|| {
+            let bitmap = Arc::new(AtomicBitmap::new_empty(2));
+
+            let a = Arc::clone(&bitmap);
+            let b = Arc::clone(&bitmap);
+
+            let t1 = thread::spawn(move || {
+                a.set_range(0, 2);
+            });
+
+            let t2 = thread::spawn(move || {
+                b.set_range(0, 2);
+            });
+
+            t1.join().unwrap();
+            t2.join().unwrap();
+
+            assert!(bitmap.all_set_in_range(0, 2));
         });
     }
 }

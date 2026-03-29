@@ -53,10 +53,14 @@ impl RawFixedArena {
 
         match inner.init_policy {
             InitPolicy::Zero => {
-                // SAFETY: ptr+offset..ptr+offset+slot_capacity is within the arena
-                // allocation and exclusively owned by this slot (bitmap claim above).
-                unsafe {
-                    inner.ptr.add(offset).write_bytes(0, inner.slot_capacity);
+                if let Some(ref zeroed_bm) = inner.zeroed_bitmap
+                    && !zeroed_bm.all_set_in_range(slot_idx, slot_idx + 1)
+                {
+                    // SAFETY: ptr+offset..ptr+offset+slot_capacity is within the arena
+                    // allocation and exclusively owned by this slot (bitmap claim above).
+                    unsafe {
+                        crate::arena::zeroize_region(inner.ptr.add(offset), inner.slot_capacity)
+                    };
                 }
             }
             InitPolicy::Uninit => {}
@@ -128,10 +132,16 @@ impl RawBuddyArena {
 
         match inner.init_policy {
             InitPolicy::Zero => {
-                // SAFETY: ptr+offset..ptr+offset+block_size is within the arena
-                // allocation and exclusively owned by this block (bitmap claim above).
-                unsafe {
-                    inner.ptr.add(offset).write_bytes(0, block_size);
+                if let Some(ref zeroed_bm) = inner.zeroed_bitmap {
+                    let order0_start = final_block_idx * (1 << final_order);
+                    let order0_end = order0_start + (1 << final_order);
+                    if !zeroed_bm.all_set_in_range(order0_start, order0_end) {
+                        // SAFETY: ptr+offset..ptr+offset+block_size is within the arena
+                        // allocation and exclusively owned (bitmap claim above).
+                        unsafe {
+                            crate::arena::zeroize_region(inner.ptr.add(offset), block_size);
+                        }
+                    }
                 }
             }
             InitPolicy::Uninit => {}
@@ -637,6 +647,48 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
+        let raw = arena.raw_alloc(nz(512)).unwrap();
+        let slice = raw.as_uninit_slice();
+        for byte in &slice[..512] {
+            assert_eq!(unsafe { byte.assume_init() }, 0);
+        }
+    }
+
+    #[test]
+    fn fixed_raw_alloc_zero_policy_zeroes_on_return() {
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .init_policy(InitPolicy::Zero)
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+
+        let mut raw = arena.raw_alloc().unwrap();
+        let ptr = raw.as_mut_ptr();
+        unsafe { std::ptr::write_bytes(ptr, 0xAB, 64) };
+        let bytes = unsafe { raw.freeze(0..64) }.unwrap();
+        drop(bytes);
+
+        let raw = arena.raw_alloc().unwrap();
+        let slice = raw.as_uninit_slice();
+        for byte in slice {
+            assert_eq!(unsafe { byte.assume_init() }, 0);
+        }
+    }
+
+    #[test]
+    fn buddy_raw_alloc_zero_policy_zeroes_on_return() {
+        let arena = BuddyArena::builder(buddy_geo())
+            .init_policy(InitPolicy::Zero)
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
+
+        let mut raw = arena.raw_alloc(nz(512)).unwrap();
+        let ptr = raw.as_mut_ptr();
+        unsafe { std::ptr::write_bytes(ptr, 0xAB, 512) };
+        let bytes = unsafe { raw.freeze(0..512) }.unwrap();
+        drop(bytes);
+
         let raw = arena.raw_alloc(nz(512)).unwrap();
         let slice = raw.as_uninit_slice();
         for byte in &slice[..512] {

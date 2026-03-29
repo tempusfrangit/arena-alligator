@@ -76,17 +76,32 @@ pub(crate) fn prefault_region(ptr: *mut u8, len: usize, page_size: usize) {
     }
 }
 
-/// Initialization policy applied to each buffer on allocate.
+/// Zeroize a region of memory using the `zeroize` crate.
 ///
-/// Controls whether arena memory is initialized before it is handed to the
-/// caller. The default ([`Uninit`](Self::Uninit)) leaves memory as-is for
-/// maximum throughput.
+/// Compiler-guaranteed not to be elided, unlike `ptr::write_bytes`.
+pub(crate) fn zeroize_region(ptr: *mut u8, len: usize) {
+    // SAFETY: caller guarantees ptr..ptr+len is a valid, exclusively-owned allocation.
+    let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
+    zeroize::Zeroize::zeroize(slice);
+}
+
+/// Initialization policy for arena memory.
+///
+/// Controls whether arena memory is zeroed. The default
+/// ([`Uninit`](Self::Uninit)) leaves memory as-is for maximum throughput.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InitPolicy {
     /// Leave memory uninitialized (default).
     #[default]
     Uninit,
-    /// Zero-fill the allocation region before returning the buffer.
+    /// Zero-fill memory on return to the arena and on first allocation.
+    ///
+    /// On return: the full slot or block is zeroed before it is marked free.
+    /// On allocation: cold memory (never returned) is zeroed. Memory that
+    /// has been through a return-scrub cycle is no longer cold and the
+    /// alloc-path zero is skipped.
+    ///
+    /// Uses [`zeroize`] for compiler-guaranteed zeroing.
     Zero,
 }
 
@@ -202,6 +217,10 @@ pub(crate) struct ArenaInner {
     pub(crate) auto_spill: bool,
     pub(crate) init_policy: InitPolicy,
     pub(crate) metrics: MetricsState,
+    /// Tracks which slots have been return-scrubbed. Only present when
+    /// `init_policy == Zero`. Write-once: return path sets bits, alloc
+    /// path only reads.
+    pub(crate) zeroed_bitmap: Option<AtomicBitmap>,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
 }
@@ -312,13 +331,12 @@ impl FixedArena {
 
         match self.inner.init_policy {
             InitPolicy::Zero => {
-                // SAFETY: ptr+offset..ptr+offset+slot_capacity is within the arena allocation
-                // and exclusively owned by this slot (bitmap claim enforced above).
-                unsafe {
-                    self.inner
-                        .ptr
-                        .add(offset)
-                        .write_bytes(0, self.inner.slot_capacity);
+                if let Some(ref zeroed_bm) = self.inner.zeroed_bitmap
+                    && !zeroed_bm.all_set_in_range(slot_idx, slot_idx + 1)
+                {
+                    // SAFETY: ptr+offset..ptr+offset+slot_capacity is within the arena
+                    // allocation and exclusively owned by this slot (bitmap claim above).
+                    unsafe { zeroize_region(self.inner.ptr.add(offset), self.inner.slot_capacity) };
                 }
             }
             InitPolicy::Uninit => {}
@@ -413,6 +431,11 @@ impl<Mode> FixedArenaBuilder<Mode> {
             std::alloc::handle_alloc_error(layout);
         }
 
+        let zeroed_bitmap = match self.config.init_policy {
+            InitPolicy::Zero => Some(AtomicBitmap::new_empty(slot_count)),
+            InitPolicy::Uninit => None,
+        };
+
         let inner = ArenaInner {
             ptr,
             layout,
@@ -422,6 +445,7 @@ impl<Mode> FixedArenaBuilder<Mode> {
             auto_spill: self.config.auto_spill,
             init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
+            zeroed_bitmap,
             #[cfg(feature = "async-alloc")]
             wake_handle,
         };
@@ -883,5 +907,41 @@ mod tests {
             .build()
             .unwrap();
         let _buf = raw_arena.allocate().unwrap();
+    }
+
+    #[test]
+    fn zero_policy_zeroes_on_return() {
+        use bytes::BufMut;
+
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .init_policy(InitPolicy::Zero)
+            .page_size(PageSize::Unknown)
+            .build()
+            .unwrap();
+
+        let mut buf = arena.allocate().unwrap();
+        buf.put_slice(&[0xAB; 64]);
+        let bytes = buf.freeze();
+        drop(bytes);
+
+        let buf = arena.allocate().unwrap();
+        let slot = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
+        assert!(
+            slot.iter().all(|&b| b == 0),
+            "slot should be zeroed from return path"
+        );
+    }
+
+    #[test]
+    fn zero_policy_first_alloc_zeroes_cold_memory() {
+        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
+            .init_policy(InitPolicy::Zero)
+            .page_size(PageSize::Unknown)
+            .build()
+            .unwrap();
+
+        let buf = arena.allocate().unwrap();
+        let slot = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
+        assert!(slot.iter().all(|&b| b == 0), "first alloc should be zeroed");
     }
 }

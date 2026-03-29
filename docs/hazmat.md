@@ -30,9 +30,11 @@ clone or slice drops.
 
 `RawFixedArena::raw_alloc()` exposes the full slot capacity.
 
-With `InitPolicy::Zero`, the slot is cleared before it is returned. With
-`InitPolicy::Uninit`, previously used bytes may still be present and are not
-safe to read until you initialize them.
+With `InitPolicy::Zero`, the slot is zeroed on return to the arena and on
+first allocation. Previously returned slots are already clean; cold slots
+(never returned) are zeroed on the alloc path. With `InitPolicy::Uninit`,
+previously used bytes may still be present and are not safe to read until
+you initialize them.
 
 ## Buddy arena behavior
 

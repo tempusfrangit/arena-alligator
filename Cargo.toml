@@ -13,6 +13,7 @@ bytes = "1.9"
 libc = { version = "0.2", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
 tracing = "0.1"
+zeroize = "1"
 
 [dev-dependencies]
 criterion = "0.5"
