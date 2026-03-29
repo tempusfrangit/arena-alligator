@@ -132,7 +132,7 @@ impl BuddyArena {
                 // SAFETY: ptr+offset..ptr+offset+block_size is within the arena allocation
                 // and exclusively owned by this block (bitmap claim enforced above).
                 unsafe {
-                    self.inner.ptr.add(offset).write_bytes(0, block_size);
+                    crate::arena::zeroize_region(self.inner.ptr.add(offset), block_size);
                 }
             }
             crate::arena::InitPolicy::Uninit => {}

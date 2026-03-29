@@ -76,6 +76,15 @@ pub(crate) fn prefault_region(ptr: *mut u8, len: usize, page_size: usize) {
     }
 }
 
+/// Zeroize a region of memory using the `zeroize` crate.
+///
+/// Compiler-guaranteed not to be elided, unlike `ptr::write_bytes`.
+pub(crate) fn zeroize_region(ptr: *mut u8, len: usize) {
+    // SAFETY: caller guarantees ptr..ptr+len is a valid, exclusively-owned allocation.
+    let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
+    zeroize::Zeroize::zeroize(slice);
+}
+
 /// Initialization policy applied to each buffer on allocate.
 ///
 /// Controls whether arena memory is initialized before it is handed to the
@@ -314,12 +323,7 @@ impl FixedArena {
             InitPolicy::Zero => {
                 // SAFETY: ptr+offset..ptr+offset+slot_capacity is within the arena allocation
                 // and exclusively owned by this slot (bitmap claim enforced above).
-                unsafe {
-                    self.inner
-                        .ptr
-                        .add(offset)
-                        .write_bytes(0, self.inner.slot_capacity);
-                }
+                unsafe { zeroize_region(self.inner.ptr.add(offset), self.inner.slot_capacity) };
             }
             InitPolicy::Uninit => {}
         }

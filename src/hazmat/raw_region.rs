@@ -55,9 +55,7 @@ impl RawFixedArena {
             InitPolicy::Zero => {
                 // SAFETY: ptr+offset..ptr+offset+slot_capacity is within the arena
                 // allocation and exclusively owned by this slot (bitmap claim above).
-                unsafe {
-                    inner.ptr.add(offset).write_bytes(0, inner.slot_capacity);
-                }
+                unsafe { crate::arena::zeroize_region(inner.ptr.add(offset), inner.slot_capacity) };
             }
             InitPolicy::Uninit => {}
         }
@@ -131,7 +129,7 @@ impl RawBuddyArena {
                 // SAFETY: ptr+offset..ptr+offset+block_size is within the arena
                 // allocation and exclusively owned by this block (bitmap claim above).
                 unsafe {
-                    inner.ptr.add(offset).write_bytes(0, block_size);
+                    crate::arena::zeroize_region(inner.ptr.add(offset), block_size);
                 }
             }
             InitPolicy::Uninit => {}
