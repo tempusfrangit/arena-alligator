@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+`0.6.1` tightens the security story around `InitPolicy::Zero`.
+
+- The `hazmat-raw-access` feature adds `RawFixedArena`, `RawBuddyArena`, and `RawRegion` for direct pointer access when callers need to bypass `Buffer` and `BufMut`.
+- `InitPolicy::Zero` is now a stronger security guarantee: arena memory is scrubbed on return to the free pool and cold memory is zeroed on first allocation, closing the reuse gap in the previous behavior.
+- The stronger `InitPolicy::Zero` behavior now applies consistently across fixed, buddy, and hazmat raw-access paths, with zeroing performed through the `zeroize` crate.
+
 ## 0.6.0
 
 This release tightens the crate's public story around the two allocator paths and rounds out the API added after `0.5.x`.

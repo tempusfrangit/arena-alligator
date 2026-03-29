@@ -279,7 +279,7 @@ The crate is exercised under standard tests, doctests, examples, and targeted co
 
 ## Changelog
 
-Release notes for `0.3.0`, `0.4.0`, `0.5.x`, and `0.6.0` are in [CHANGELOG.md](CHANGELOG.md).
+Release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## Status
 
