@@ -81,11 +81,13 @@ mod arena;
 mod bitmap;
 mod buddy;
 mod buffer;
+mod dealloc;
 mod error;
 mod ext;
 mod geometry;
 mod handle;
 mod metrics;
+mod spec;
 mod sync;
 
 #[cfg(feature = "async-alloc")]

@@ -210,7 +210,7 @@ impl BuildConfig {
 
 pub(crate) struct ArenaInner {
     pub(crate) ptr: *mut u8,
-    layout: Layout,
+    pub(crate) total_size: usize,
     pub(crate) slot_capacity: usize,
     pub(crate) slot_count: usize,
     pub(crate) bitmap: AtomicBitmap,
@@ -221,6 +221,7 @@ pub(crate) struct ArenaInner {
     /// `init_policy == Zero`. Write-once: return path sets bits, alloc
     /// path only reads.
     pub(crate) zeroed_bitmap: Option<AtomicBitmap>,
+    dealloc: crate::dealloc::ErasedDealloc,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
 }
@@ -234,9 +235,12 @@ unsafe impl Sync for ArenaInner {}
 
 impl Drop for ArenaInner {
     fn drop(&mut self) {
-        // SAFETY: ptr and layout were produced by std::alloc::alloc in build().
+        // SAFETY: ErasedDealloc::dealloc is called exactly once (here).
+        // We take ownership via std::mem::replace to avoid double-drop.
         unsafe {
-            std::alloc::dealloc(self.ptr, self.layout);
+            let dealloc =
+                std::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
+            dealloc.dealloc(self.ptr, self.total_size);
         }
     }
 }
@@ -347,7 +351,9 @@ impl FixedArena {
             .record_alloc_success(self.inner.slot_capacity);
 
         Ok(Buffer::new_fixed(
-            Arc::clone(&self.inner),
+            crate::allocation::ArenaRef::Fixed(self.inner.clone()),
+            self.inner.ptr,
+            self.inner.auto_spill,
             slot_idx,
             offset,
             self.inner.slot_capacity,
@@ -438,7 +444,7 @@ impl<Mode> FixedArenaBuilder<Mode> {
 
         let inner = ArenaInner {
             ptr,
-            layout,
+            total_size,
             slot_capacity: aligned_capacity,
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
@@ -446,6 +452,7 @@ impl<Mode> FixedArenaBuilder<Mode> {
             init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
             zeroed_bitmap,
+            dealloc: crate::dealloc::ErasedDealloc::new(crate::dealloc::HeapDealloc::new(layout)),
             #[cfg(feature = "async-alloc")]
             wake_handle,
         };

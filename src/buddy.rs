@@ -12,7 +12,6 @@ use crate::sync::atomic::{AtomicUsize, Ordering};
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct BuddyArenaInner {
     pub(crate) ptr: *mut u8,
-    layout: Layout,
     pub(crate) total_size: usize,
     pub(crate) min_block_size: usize,
     pub(crate) max_order: usize,
@@ -26,6 +25,7 @@ pub(crate) struct BuddyArenaInner {
     /// when `init_policy == Zero`. Write-once: return path sets bits, alloc
     /// path only reads.
     pub(crate) zeroed_bitmap: Option<AtomicBitmap>,
+    dealloc: crate::dealloc::ErasedDealloc,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::BuddyWakeHandle>,
 }
@@ -37,9 +37,11 @@ unsafe impl Sync for BuddyArenaInner {}
 
 impl Drop for BuddyArenaInner {
     fn drop(&mut self) {
-        // SAFETY: ptr and layout were produced by std::alloc::alloc in build().
+        // SAFETY: ErasedDealloc::dealloc is called exactly once (here).
         unsafe {
-            std::alloc::dealloc(self.ptr, self.layout);
+            let dealloc =
+                std::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
+            dealloc.dealloc(self.ptr, self.total_size);
         }
     }
 }
@@ -89,7 +91,9 @@ impl BuddyArena {
             _mode: std::marker::PhantomData,
         }
     }
+}
 
+impl BuddyArena {
     /// Total bytes managed by this arena.
     pub fn total_size(&self) -> usize {
         self.inner.total_size
@@ -111,7 +115,9 @@ impl BuddyArena {
             .metrics
             .buddy_snapshot(self.inner.largest_free_block())
     }
+}
 
+impl BuddyArena {
     /// Allocate a buddy-backed buffer with at least `len` bytes of capacity.
     pub fn allocate(&self, len: NonZeroUsize) -> Result<Buffer, AllocError> {
         let target_order = self.order_for_request(len.get()).ok_or_else(|| {
@@ -157,7 +163,9 @@ impl BuddyArena {
         };
 
         Ok(Buffer::new_buddy(
-            Arc::clone(&self.inner),
+            crate::allocation::ArenaRef::Buddy(self.inner.clone()),
+            self.inner.ptr,
+            self.inner.auto_spill,
             final_order,
             final_block_idx,
             offset,
@@ -340,7 +348,6 @@ impl<Mode> BuddyArenaBuilder<Mode> {
 
         let inner = BuddyArenaInner {
             ptr,
-            layout,
             total_size,
             min_block_size,
             max_order,
@@ -351,6 +358,7 @@ impl<Mode> BuddyArenaBuilder<Mode> {
             init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
             zeroed_bitmap,
+            dealloc: crate::dealloc::ErasedDealloc::new(crate::dealloc::HeapDealloc::new(layout)),
             #[cfg(feature = "async-alloc")]
             wake_handle: waker,
         };

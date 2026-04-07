@@ -5,11 +5,8 @@ use bytes::buf::UninitSlice;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use crate::allocation::{AllocationKind, ArenaRef};
-use crate::arena::ArenaInner;
-use crate::buddy::BuddyArenaInner;
 use crate::error::BufferFullError;
 use crate::handle::BufferHandle;
-use crate::sync::Arc;
 
 /// A writable buffer backed by arena memory.
 ///
@@ -36,15 +33,15 @@ unsafe impl Send for Buffer {}
 
 impl Buffer {
     pub(crate) fn new_fixed(
-        inner: Arc<ArenaInner>,
+        owner: ArenaRef,
+        ptr: *mut u8,
+        auto_spill: bool,
         slot_idx: usize,
         offset: usize,
         capacity: usize,
     ) -> Self {
-        let ptr = inner.ptr;
-        let auto_spill = inner.auto_spill;
         Self {
-            owner: ManuallyDrop::new(ArenaRef::Fixed(inner)),
+            owner: ManuallyDrop::new(owner),
             allocation: AllocationKind::Fixed { slot_idx },
             ptr,
             auto_spill,
@@ -57,16 +54,16 @@ impl Buffer {
     }
 
     pub(crate) fn new_buddy(
-        inner: Arc<BuddyArenaInner>,
+        owner: ArenaRef,
+        ptr: *mut u8,
+        auto_spill: bool,
         order: usize,
         block_idx: usize,
         offset: usize,
         capacity: usize,
     ) -> Self {
-        let ptr = inner.ptr;
-        let auto_spill = inner.auto_spill;
         Self {
-            owner: ManuallyDrop::new(ArenaRef::Buddy(inner)),
+            owner: ManuallyDrop::new(owner),
             allocation: AllocationKind::Buddy { order, block_idx },
             ptr,
             auto_spill,

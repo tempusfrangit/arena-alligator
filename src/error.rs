@@ -26,6 +26,12 @@ pub enum BuildError {
     InvalidAlignment,
     /// Buddy arena geometry is invalid.
     InvalidGeometry,
+    /// Requested slot size exceeds backing memory length.
+    SlotSizeExceedsBacking,
+    /// No usable slots or blocks fit in the provided backing memory.
+    ZeroUsableSlots,
+    /// Null pointer provided to `from_raw`.
+    NullPointer,
 }
 
 impl fmt::Display for BuildError {
@@ -39,6 +45,13 @@ impl fmt::Display for BuildError {
                     "buddy arena geometry must be a power-of-two multiple of min block size"
                 )
             }
+            BuildError::SlotSizeExceedsBacking => {
+                write!(f, "requested slot size exceeds backing memory length")
+            }
+            BuildError::ZeroUsableSlots => {
+                write!(f, "no usable slots fit in the provided backing memory")
+            }
+            BuildError::NullPointer => write!(f, "null pointer provided to from_raw"),
         }
     }
 }
