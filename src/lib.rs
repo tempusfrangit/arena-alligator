@@ -71,6 +71,27 @@
 //! [`BytesExt::into_owned()`] copies frozen bytes into fresh owned mutable
 //! storage.
 //!
+//! # Preallocated memory handoff
+//!
+//! [`FixedArena::from_raw()`] and [`BuddyArena::from_raw()`] let callers hand
+//! pre-existing memory to the arena. This is for mmap'd regions, shared
+//! memory, static buffers, and similar cases where the backing storage is
+//! provisioned elsewhere.
+//!
+//! For `&'static mut` buffers, prefer the safe
+//! [`FixedArena::from_static()`] and [`BuddyArena::from_static()`]
+//! wrappers. Use `from_raw()` for pointer/length regions and custom
+//! deallocation strategies.
+//!
+//! These constructors are `unsafe` because the arena cannot validate pointer
+//! provenance, exclusivity, or deallocation correctness. On the safe side of
+//! the boundary, the resulting arenas use the same allocation, freeze, and
+//! retention rules as the ordinary builder paths.
+//!
+//! Use [`NoDealloc`] when the caller retains responsibility for freeing the
+//! backing region. Use [`HeapDealloc`] when the region came from
+//! [`std::alloc::alloc`].
+//!
 //! # Async allocation
 //!
 //! With the `async-alloc` feature, [`AsyncFixedArena`] and [`AsyncBuddyArena`]
@@ -96,17 +117,19 @@ mod async_alloc;
 #[cfg(feature = "hazmat-raw-access")]
 pub mod hazmat;
 
-pub use arena::{AutoSpill, Standard};
+pub use arena::{AutoSpill, RawBackedFixedArenaBuilder, Standard};
 pub use arena::{FixedArena, FixedArenaBuilder, InitPolicy, PageSize, Unfaulted};
+pub use buddy::{BuddyArena, BuddyArenaBuilder, RawBackedBuddyArenaBuilder};
+pub use buffer::Buffer;
+pub use dealloc::{Dealloc, HeapDealloc, NoDealloc};
+pub use error::{AllocError, BufferFullError, BuildError};
 
 #[cfg(feature = "hazmat-raw-access")]
 pub use arena::HazmatRaw;
-pub use buddy::{BuddyArena, BuddyArenaBuilder};
-pub use buffer::Buffer;
-pub use error::{AllocError, BufferFullError, BuildError};
 pub use ext::BytesExt;
 pub use geometry::BuddyGeometry;
 pub use metrics::{BuddyArenaMetrics, FixedArenaMetrics};
+pub use spec::{BuddyHint, SlotSpec};
 
 #[cfg(feature = "async-alloc")]
 pub use async_alloc::{

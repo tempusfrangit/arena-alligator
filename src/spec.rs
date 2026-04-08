@@ -2,21 +2,28 @@ use core::num::NonZeroUsize;
 
 use crate::error::BuildError;
 
-/// How to slice user-provided memory into fixed-size slots.
-#[cfg_attr(not(test), allow(dead_code))]
+/// How to slice caller-provided memory into fixed-size slots.
+///
+/// [`Count`](Self::Count) preserves a target slot count and derives slot
+/// capacity from the backing region. [`Size`](Self::Size) preserves a target
+/// slot capacity and derives the number of slots that fit.
 pub enum SlotSpec {
     /// Slice into exactly this many equal-sized slots.
-    /// Slot size is derived from `block_len / count`, aligned down.
+    ///
+    /// Slot capacity is derived from `block_len / count`, then aligned down.
+    /// Any tail bytes that do not fit a whole aligned slot are left unused.
     Count(NonZeroUsize),
     /// Slice into slots of this size.
-    /// Slot count is derived from `block_len / size`.
+    ///
+    /// Slot count is derived from `block_len / size`. If alignment forces the
+    /// capacity down, the arena uses the aligned-down slot size and leaves any
+    /// remainder unused.
     Size(NonZeroUsize),
 }
 
 impl SlotSpec {
     /// Resolve into (slot_count, slot_capacity) given the backing block
     /// length and alignment.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn resolve(
         &self,
         block_len: usize,
@@ -49,27 +56,26 @@ impl SlotSpec {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn align_down(val: usize, align: usize) -> usize {
     val & !(align - 1)
 }
 
-/// Hint for deriving buddy geometry from user-provided memory.
-#[cfg_attr(not(test), allow(dead_code))]
+/// Hint for deriving buddy geometry from caller-provided memory.
 pub enum BuddyHint {
-    /// Minimum allocation size. Max order derived from block length.
+    /// Target minimum allocation size.
+    ///
+    /// The arena rounds this to a power of two and derives the largest
+    /// matching buddy geometry that fits within the backing region.
     MinAlloc(NonZeroUsize),
 }
 
 impl BuddyHint {
     /// Create a hint specifying the minimum allocation size.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn min_alloc(size: NonZeroUsize) -> Self {
         Self::MinAlloc(size)
     }
 
     /// Derive (min_block_size, max_order) from the hint and block length.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn resolve(&self, block_len: usize) -> Result<(usize, usize), BuildError> {
         match *self {
             BuddyHint::MinAlloc(min) => {
@@ -100,7 +106,6 @@ impl BuddyHint {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn prev_power_of_two(n: usize) -> usize {
     if n == 0 {
         return 0;

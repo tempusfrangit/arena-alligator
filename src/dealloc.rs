@@ -26,7 +26,10 @@ pub struct HeapDealloc {
 }
 
 impl HeapDealloc {
-    pub(crate) fn new(layout: Layout) -> Self {
+    /// Wrap a [`Layout`] for deallocation via [`std::alloc::dealloc`].
+    ///
+    /// The layout must match the one used to allocate the memory.
+    pub fn new(layout: Layout) -> Self {
         Self { layout }
     }
 }
@@ -44,7 +47,6 @@ unsafe impl Dealloc for HeapDealloc {
 /// Use when the caller retains responsibility for freeing the backing
 /// memory after the arena drops (e.g. static buffers, linker-placed
 /// memory in embedded/no_std).
-#[cfg_attr(not(test), allow(dead_code))]
 pub struct NoDealloc;
 
 // SAFETY: no-op is always safe.
