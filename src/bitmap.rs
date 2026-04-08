@@ -571,6 +571,8 @@ mod tests {
 
 #[cfg(all(test, loom))]
 mod loom_tests {
+    use alloc::vec::Vec;
+
     use crate::sync::Arc;
     use crate::sync::atomic::{AtomicUsize, Ordering};
     use loom::thread;
