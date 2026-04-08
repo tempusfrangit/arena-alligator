@@ -1,6 +1,8 @@
-use std::alloc::Layout;
-use std::fmt;
-use std::num::NonZeroUsize;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::alloc::Layout;
+use core::fmt;
+use core::num::NonZeroUsize;
 
 use crate::bitmap::AtomicBitmap;
 use crate::buffer::Buffer;
@@ -41,7 +43,7 @@ impl Drop for BuddyArenaInner {
         // SAFETY: ErasedDealloc::dealloc is called exactly once (here).
         unsafe {
             let dealloc =
-                std::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
+                core::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
             dealloc.dealloc(self.ptr, self.dealloc_len);
         }
     }
@@ -70,7 +72,7 @@ impl BuddyArena {
     /// Create a builder for a buddy arena.
     ///
     /// ```
-    /// use std::num::NonZeroUsize;
+    /// use core::num::NonZeroUsize;
     /// use arena_alligator::{BuddyArena, BuddyGeometry};
     /// use bytes::BufMut;
     ///
@@ -89,7 +91,7 @@ impl BuddyArena {
         BuddyArenaBuilder {
             geometry,
             config: crate::arena::BuildConfig::new(),
-            _mode: std::marker::PhantomData,
+            _mode: core::marker::PhantomData,
         }
     }
 
@@ -441,7 +443,7 @@ impl<D: crate::dealloc::Dealloc> RawBackedBuddyArenaBuilder<D> {
 pub struct BuddyArenaBuilder<Mode = crate::arena::Standard> {
     geometry: crate::geometry::BuddyGeometry,
     config: crate::arena::BuildConfig,
-    _mode: std::marker::PhantomData<Mode>,
+    _mode: core::marker::PhantomData<Mode>,
 }
 
 impl<Mode> BuddyArenaBuilder<Mode> {
@@ -484,9 +486,9 @@ impl<Mode> BuddyArenaBuilder<Mode> {
             Layout::from_size_align(total_size, alignment).map_err(|_| BuildError::SizeOverflow)?;
 
         // SAFETY: layout has non-zero size and valid alignment.
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
         if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
+            alloc::alloc::handle_alloc_error(layout);
         }
 
         let mut free_bitmaps = Vec::with_capacity(max_order + 1);
@@ -561,9 +563,9 @@ impl<Mode> BuddyArenaBuilder<Mode> {
         W: crate::async_alloc::BuddyWaiter,
     {
         let page_size = self.config.page_size.resolve();
-        let waiters = std::sync::Arc::new(waiters);
+        let waiters = alloc::sync::Arc::new(waiters);
         let arena = self.build_raw(Some(crate::async_alloc::BuddyWakeHandle::new(
-            std::sync::Arc::clone(&waiters),
+            alloc::sync::Arc::clone(&waiters),
         )))?;
 
         if let Some(ps) = page_size {
@@ -587,7 +589,7 @@ impl BuddyArenaBuilder<crate::arena::Standard> {
                 auto_spill: true,
                 ..self.config
             },
-            _mode: std::marker::PhantomData,
+            _mode: core::marker::PhantomData,
         }
     }
 
@@ -629,7 +631,7 @@ impl BuddyArenaBuilder<crate::arena::Standard> {
         BuddyArenaBuilder {
             geometry: self.geometry,
             config: self.config,
-            _mode: std::marker::PhantomData,
+            _mode: core::marker::PhantomData,
         }
     }
 }
@@ -763,6 +765,8 @@ fn blocks_at_order(max_order: usize, order: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+
     use super::*;
     use crate::geometry::BuddyGeometry;
 
@@ -945,7 +949,7 @@ mod tests {
 
         // Re-allocate; zero policy should have cleared it.
         let buf = arena.allocate(nz(512)).unwrap();
-        let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 1024) };
+        let block = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 1024) };
         assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
     }
 
@@ -1010,7 +1014,7 @@ mod tests {
         drop(bytes);
 
         let buf = arena.allocate(nz(512)).unwrap();
-        let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 512) };
+        let block = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 512) };
         assert!(
             block.iter().all(|&b| b == 0),
             "block should be zeroed from return path"
@@ -1033,7 +1037,7 @@ mod tests {
         // Some order-0 bits are set (returned), some are not (cold from split siblings).
         // The alloc path should zeroize because not all bits are set.
         let buf = arena.allocate(nz(4096)).unwrap();
-        let block = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 4096) };
+        let block = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 4096) };
         assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
     }
 }

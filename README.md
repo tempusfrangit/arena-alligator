@@ -20,7 +20,7 @@ Write into a `Buffer`, call `freeze()`, and hand off `Bytes` backed by arena mem
 ## Quick start
 
 ```rust
-use std::num::NonZeroUsize;
+use core::num::NonZeroUsize;
 use arena_alligator::FixedArena;
 use bytes::BufMut;
 
@@ -32,8 +32,29 @@ let arena = FixedArena::with_slot_capacity(
 let mut buf = arena.allocate()?;
 buf.put_slice(b"request payload");
 let _bytes = buf.freeze();
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
+
+## `no_std` support
+
+This crate is `#![no_std]` and depends only on `alloc`. It works on targets
+with a global allocator and pointer-width atomics, including embedded systems
+using `embedded-alloc` or similar.
+
+```toml
+# Embedded / no_std: disable default features
+[dependencies]
+arena-alligator = { version = "0.6", default-features = false }
+```
+
+### Feature flags
+
+| Feature | Default | What it enables |
+| ------- | ------- | --------------- |
+| `std` | yes | Standard-library integrations and dependency features; required by `async-alloc` |
+| `libc` | yes | Page size detection via `sysconf` on Unix |
+| `async-alloc` | no | `allocate_async()` via tokio (implies `std`) |
+| `hazmat-raw-access` | no | Raw pointer access to arena memory |
 
 ## Which allocator should I use?
 
@@ -47,7 +68,7 @@ Use `FixedArena` by default. Use `BuddyArena` only when variable-size allocation
 ## Buddy allocator example
 
 ```rust
-use std::num::NonZeroUsize;
+use core::num::NonZeroUsize;
 use arena_alligator::{BuddyArena, BuddyGeometry};
 use bytes::BufMut;
 
@@ -62,7 +83,7 @@ let arena = BuddyArena::builder(
 let mut buf = arena.allocate(NonZeroUsize::new(8192).unwrap())?;
 buf.put_slice(&vec![0u8; 8192]);
 let _bytes = buf.freeze();
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
 ### Geometry choice
@@ -78,7 +99,7 @@ By default, writing past capacity panics. That follows the contract of a fixed-s
 With `auto_spill()`, the buffer copies its current contents to heap-backed storage, releases the arena allocation immediately, and keeps writing on the heap. `freeze()` still returns `Bytes`.
 
 ```rust
-# use std::num::NonZeroUsize;
+# use core::num::NonZeroUsize;
 # use arena_alligator::FixedArena;
 # use bytes::BufMut;
 let arena = FixedArena::with_slot_capacity(
@@ -90,7 +111,7 @@ let mut buf = arena.allocate()?;
 buf.put_slice(&[0u8; 2048]);
 assert!(buf.is_spilled());
 let _bytes = buf.freeze();
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
 ## Initialization policy
@@ -100,7 +121,7 @@ By default, arena allocations use `InitPolicy::Uninit`. That follows Rust's usua
 For security-sensitive workloads, `InitPolicy::Zero` zeroes memory on return to the arena and on first allocation. Returned slots and blocks are scrubbed before being marked free, preventing data leaks between callers. All zeroing uses the `zeroize` crate (compiler-guaranteed not elided).
 
 ```rust
-# use std::num::NonZeroUsize;
+# use core::num::NonZeroUsize;
 # use arena_alligator::{FixedArena, InitPolicy};
 let arena = FixedArena::with_slot_capacity(
     NonZeroUsize::new(1024).unwrap(),
@@ -108,7 +129,7 @@ let arena = FixedArena::with_slot_capacity(
 )
     .init_policy(InitPolicy::Zero)
     .build()?;
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
 ## Preallocated memory handoff
@@ -132,7 +153,7 @@ Use `NoDealloc` when the caller retains responsibility for freeing the backing
 memory.
 
 ```rust
-# use std::num::NonZeroUsize;
+# use core::num::NonZeroUsize;
 # use arena_alligator::{FixedArena, SlotSpec};
 static mut BLOCK: [u8; 4096] = [0; 4096];
 fn nz(n: usize) -> NonZeroUsize {
@@ -144,7 +165,7 @@ let arena = FixedArena::from_static(unsafe { &mut BLOCK }, SlotSpec::Count(nz(4)
     .build()?;
 
 assert_eq!(arena.slot_count(), 4);
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
 ## Hazmat raw access
@@ -167,7 +188,7 @@ arena-alligator = { version = "0.6", features = ["hazmat-raw-access"] }
 ```
 
 ```rust
-# use std::num::NonZeroUsize;
+# use core::num::NonZeroUsize;
 # use arena_alligator::FixedArena;
 fn nz(n: usize) -> NonZeroUsize {
     NonZeroUsize::new(n).unwrap()
@@ -182,13 +203,13 @@ let ptr = raw.as_mut_ptr();
 
 unsafe {
     let len = 5u32.to_le_bytes();
-    std::ptr::copy_nonoverlapping(len.as_ptr(), ptr, 4);
-    std::ptr::copy_nonoverlapping(b"hello".as_ptr(), ptr.add(4), 5);
+    core::ptr::copy_nonoverlapping(len.as_ptr(), ptr, 4);
+    core::ptr::copy_nonoverlapping(b"hello".as_ptr(), ptr.add(4), 5);
 }
 
 let payload = unsafe { raw.freeze(4..9) }?;
 assert_eq!(&payload[..], b"hello");
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
 See [`docs/hazmat.md`](docs/hazmat.md) for the sharp edges and the visibility
@@ -227,7 +248,7 @@ In load tests, watch `spill_count` and `largest_free_block` over time to catch p
 `BytesExt::into_owned()` is the explicit handoff from arena-backed frozen bytes to owned mutable heap storage. Unlike `auto_spill()`, which changes storage implicitly on write overflow, `into_owned()` makes the copy at the point where the caller chooses to leave arena-backed storage:
 
 ```rust
-use std::num::NonZeroUsize;
+use core::num::NonZeroUsize;
 use arena_alligator::{FixedArena, BytesExt};
 use bytes::BufMut;
 
@@ -244,7 +265,7 @@ let mut owned = frozen.into_owned();
 // Arena slot is freed; owned is heap-backed and mutable
 owned.put_slice(b" world");
 assert_eq!(&owned[..], b"hello world");
-# Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn core::error::Error>>(())
 ```
 
 ## Examples

@@ -1,9 +1,12 @@
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+
 use crate::sync::atomic::{AtomicUsize, Ordering};
 
 type AtomicWord = AtomicUsize;
 type Word = usize;
 
-const BITS_PER_WORD: usize = std::mem::size_of::<Word>() * 8;
+const BITS_PER_WORD: usize = core::mem::size_of::<Word>() * 8;
 
 /// Generates a cache-line-aligned wrapper to prevent false sharing.
 /// 64 bytes on 64-bit targets (x86-64, AArch64), 32 bytes on 32-bit.
@@ -273,6 +276,9 @@ fn range_mask(start_bit: usize, end_bit: usize) -> Word {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    use alloc::vec::Vec;
+
     use super::*;
 
     #[test]
@@ -386,6 +392,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn concurrent_alloc_free() {
         use std::sync::{Arc, Barrier};
         use std::thread;
@@ -429,6 +436,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "std")]
     fn concurrent_no_duplicates() {
         use std::sync::{Arc, Barrier};
         use std::thread;

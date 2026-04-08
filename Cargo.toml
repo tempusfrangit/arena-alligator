@@ -9,11 +9,11 @@ repository = "https://github.com/tempusfrangit/arena-alligator"
 documentation = "https://docs.rs/arena-alligator"
 
 [dependencies]
-bytes = "1.9"
+bytes = { version = "1.9", default-features = false }
 libc = { version = "0.2", optional = true }
 tokio = { version = "1", features = ["sync"], optional = true }
-tracing = "0.1"
-zeroize = "1"
+tracing = { version = "0.1", default-features = false }
+zeroize = { version = "1", default-features = false }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -26,8 +26,9 @@ trybuild = "1"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)', 'cfg(feature, values("hazmat-raw-access"))'] }
 
 [features]
-default = ["libc"]
-async-alloc = ["dep:tokio"]
+default = ["std", "libc"]
+std = ["bytes/std", "tracing/std", "zeroize/std"]
+async-alloc = ["std", "dep:tokio"]
 hazmat-raw-access = []
 
 [[bench]]

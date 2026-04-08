@@ -2,10 +2,11 @@
 
 ## 0.6.1
 
-`0.6.1` adds preallocated-memory handoff and strengthens `InitPolicy::Zero`.
+`0.6.1` expands the crate's deployment surface and low-level control.
 
 - The `hazmat-raw-access` feature adds `RawFixedArena`, `RawBuddyArena`, and `RawRegion` for direct pointer access when callers need to bypass `Buffer` and `BufMut`.
 - `FixedArena` and `BuddyArena` now support preallocated-memory handoff through `from_raw()`, plus safe `from_static()` helpers for `&'static mut` buffers in embedded and other caller-managed setups.
+- The crate now supports `#![no_std]` + `alloc` builds, with CI coverage for `--no-default-features` and the `async-alloc` path remaining opt-in behind `std`.
 - `InitPolicy::Zero` is now a stronger security guarantee: arena memory is scrubbed on return to the free pool and cold memory is zeroed on first allocation, closing the reuse gap in the previous behavior.
 - The stronger `InitPolicy::Zero` behavior now applies consistently across fixed, buddy, and hazmat raw-access paths, with zeroing performed through the `zeroize` crate.
 

@@ -1,8 +1,8 @@
-use std::fmt;
-use std::mem::ManuallyDrop;
-use std::mem::MaybeUninit;
-use std::num::NonZeroUsize;
-use std::ops::Range;
+use core::fmt;
+use core::mem::ManuallyDrop;
+use core::mem::MaybeUninit;
+use core::num::NonZeroUsize;
+use core::ops::Range;
 
 use bytes::Bytes;
 
@@ -21,7 +21,7 @@ use crate::sync::Arc;
 #[derive(Clone)]
 pub struct RawFixedArena(pub(crate) FixedArena);
 
-impl std::ops::Deref for RawFixedArena {
+impl core::ops::Deref for RawFixedArena {
     type Target = FixedArena;
     fn deref(&self) -> &FixedArena {
         &self.0
@@ -85,7 +85,7 @@ impl RawFixedArena {
 #[derive(Clone)]
 pub struct RawBuddyArena(pub(crate) BuddyArena);
 
-impl std::ops::Deref for RawBuddyArena {
+impl core::ops::Deref for RawBuddyArena {
     type Target = BuddyArena;
     fn deref(&self) -> &BuddyArena {
         &self.0
@@ -206,7 +206,7 @@ impl fmt::Display for RawFreezeError {
     }
 }
 
-impl std::error::Error for RawFreezeError {}
+impl core::error::Error for RawFreezeError {}
 
 /// Raw allocation from an arena.
 ///
@@ -268,7 +268,7 @@ impl RawRegion {
     pub fn as_uninit_slice_mut(&mut self) -> &mut [MaybeUninit<u8>] {
         // SAFETY: ptr+offset is valid for capacity bytes, exclusively accessed.
         unsafe {
-            std::slice::from_raw_parts_mut(
+            core::slice::from_raw_parts_mut(
                 self.ptr.add(self.offset).cast::<MaybeUninit<u8>>(),
                 self.capacity,
             )
@@ -279,7 +279,7 @@ impl RawRegion {
     pub fn as_uninit_slice(&self) -> &[MaybeUninit<u8>] {
         // SAFETY: ptr+offset is valid for capacity bytes.
         unsafe {
-            std::slice::from_raw_parts(
+            core::slice::from_raw_parts(
                 self.ptr.add(self.offset).cast::<MaybeUninit<u8>>(),
                 self.capacity,
             )
@@ -316,7 +316,7 @@ impl RawRegion {
         let offset = self.offset + range.start;
         let len = range.end - range.start;
 
-        std::mem::forget(self);
+        core::mem::forget(self);
 
         let handle = BufferHandle::new(owner, allocation, ptr, offset, len);
         Ok(Bytes::from_owner(handle))
@@ -343,7 +343,7 @@ impl Drop for RawRegion {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use core::num::NonZeroUsize;
 
     use crate::{BuddyArena, BuddyGeometry, FixedArena};
 
@@ -373,7 +373,7 @@ mod tests {
             .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
-        unsafe { std::ptr::copy_nonoverlapping(b"hello".as_ptr(), ptr, 5) };
+        unsafe { core::ptr::copy_nonoverlapping(b"hello".as_ptr(), ptr, 5) };
         let bytes = unsafe { raw.freeze(0..5) }.unwrap();
         assert_eq!(&bytes[..], b"hello");
     }
@@ -386,7 +386,7 @@ mod tests {
             .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
-        unsafe { std::ptr::copy_nonoverlapping(b"XXhelloXX".as_ptr(), ptr, 9) };
+        unsafe { core::ptr::copy_nonoverlapping(b"XXhelloXX".as_ptr(), ptr, 9) };
         let bytes = unsafe { raw.freeze(2..7) }.unwrap();
         assert_eq!(&bytes[..], b"hello");
     }
@@ -460,7 +460,7 @@ mod tests {
                 .unwrap();
             let mut raw = arena.raw_alloc().unwrap();
             let ptr = raw.as_mut_ptr();
-            unsafe { std::ptr::copy_nonoverlapping(b"persists".as_ptr(), ptr, 8) };
+            unsafe { core::ptr::copy_nonoverlapping(b"persists".as_ptr(), ptr, 8) };
             unsafe { raw.freeze(0..8) }.unwrap()
         };
         assert_eq!(&bytes[..], b"persists");
@@ -474,7 +474,7 @@ mod tests {
             .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
-        unsafe { std::ptr::copy_nonoverlapping(b"hello world".as_ptr(), ptr, 11) };
+        unsafe { core::ptr::copy_nonoverlapping(b"hello world".as_ptr(), ptr, 11) };
         let bytes = unsafe { raw.freeze(0..11) }.unwrap();
         let hello = bytes.slice(0..5);
         drop(bytes);
@@ -526,7 +526,7 @@ mod tests {
             .unwrap();
         let mut raw = arena.raw_alloc(nz(512)).unwrap();
         let ptr = raw.as_mut_ptr();
-        unsafe { std::ptr::copy_nonoverlapping(b"buddy".as_ptr(), ptr, 5) };
+        unsafe { core::ptr::copy_nonoverlapping(b"buddy".as_ptr(), ptr, 5) };
         let bytes = unsafe { raw.freeze(0..5) }.unwrap();
         assert_eq!(&bytes[..], b"buddy");
     }
@@ -664,7 +664,7 @@ mod tests {
 
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
-        unsafe { std::ptr::write_bytes(ptr, 0xAB, 64) };
+        unsafe { core::ptr::write_bytes(ptr, 0xAB, 64) };
         let bytes = unsafe { raw.freeze(0..64) }.unwrap();
         drop(bytes);
 
@@ -685,7 +685,7 @@ mod tests {
 
         let mut raw = arena.raw_alloc(nz(512)).unwrap();
         let ptr = raw.as_mut_ptr();
-        unsafe { std::ptr::write_bytes(ptr, 0xAB, 512) };
+        unsafe { core::ptr::write_bytes(ptr, 0xAB, 512) };
         let bytes = unsafe { raw.freeze(0..512) }.unwrap();
         drop(bytes);
 

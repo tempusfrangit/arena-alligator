@@ -1,3 +1,4 @@
+#![no_std]
 #![warn(missing_docs)]
 #![warn(unsafe_op_in_unsafe_fn)]
 
@@ -23,7 +24,7 @@
 //! # Quick start
 //!
 //! ```
-//! use std::num::NonZeroUsize;
+//! use core::num::NonZeroUsize;
 //! use arena_alligator::FixedArena;
 //! use bytes::BufMut;
 //!
@@ -90,12 +91,38 @@
 //!
 //! Use [`NoDealloc`] when the caller retains responsibility for freeing the
 //! backing region. Use [`HeapDealloc`] when the region came from
-//! [`std::alloc::alloc`].
+//! [`alloc::alloc::alloc`].
 //!
 //! # Async allocation
 //!
 //! With the `async-alloc` feature, [`AsyncFixedArena`] and [`AsyncBuddyArena`]
 //! provide `allocate_async()` which waits until capacity is available.
+//!
+//! # `no_std`
+//!
+//! This crate is `#![no_std]` by default and depends only on `alloc` and
+//! `core`. It works on targets with a global allocator and pointer-width
+//! atomics, including embedded systems.
+//!
+//! ## Feature flags
+//!
+//! | Feature | Default | What it enables |
+//! | ------- | ------- | --------------- |
+//! | `std` | yes | Standard-library integrations and dependency features; required by `async-alloc` |
+//! | `libc` | yes | Page size detection via `sysconf` on Unix |
+//! | `async-alloc` | no | [`AsyncFixedArena`] / [`AsyncBuddyArena`] via tokio (implies `std`) |
+//! | `hazmat-raw-access` | no | Raw pointer access to arena memory |
+//!
+//! For `no_std` usage, disable default features:
+//!
+//! ```toml
+//! [dependencies]
+//! arena-alligator = { version = "0.6", default-features = false }
+//! ```
+
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
 
 mod allocation;
 mod arena;

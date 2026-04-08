@@ -1,4 +1,4 @@
-use std::fmt;
+use core::fmt;
 
 /// Allocation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +15,7 @@ impl fmt::Display for AllocError {
     }
 }
 
-impl std::error::Error for AllocError {}
+impl core::error::Error for AllocError {}
 
 /// Builder configuration error.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,7 +56,7 @@ impl fmt::Display for BuildError {
     }
 }
 
-impl std::error::Error for BuildError {}
+impl core::error::Error for BuildError {}
 
 /// Buffer capacity exceeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,10 +77,13 @@ impl fmt::Display for BufferFullError {
     }
 }
 
-impl std::error::Error for BufferFullError {}
+impl core::error::Error for BufferFullError {}
 
 #[cfg(test)]
 mod tests {
+    use alloc::boxed::Box;
+    use alloc::string::ToString;
+
     use super::*;
 
     #[test]
@@ -91,7 +94,7 @@ mod tests {
 
     #[test]
     fn alloc_error_is_std_error() {
-        let err: Box<dyn std::error::Error> = Box::new(AllocError::ArenaFull);
+        let err: Box<dyn core::error::Error> = Box::new(AllocError::ArenaFull);
         assert_eq!(err.to_string(), "arena is full");
     }
 
@@ -113,7 +116,7 @@ mod tests {
 
     #[test]
     fn build_error_is_std_error() {
-        let err: Box<dyn std::error::Error> = Box::new(BuildError::SizeOverflow);
+        let err: Box<dyn core::error::Error> = Box::new(BuildError::SizeOverflow);
         assert!(err.to_string().contains("overflows"));
     }
 

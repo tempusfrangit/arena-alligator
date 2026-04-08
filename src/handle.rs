@@ -36,7 +36,7 @@ impl AsRef<[u8]> for BufferHandle {
     fn as_ref(&self) -> &[u8] {
         // SAFETY: the owning arena ref keeps the allocation alive.
         // Data is immutable after freeze consumed the Buffer.
-        unsafe { std::slice::from_raw_parts(self.ptr.add(self.offset), self.len) }
+        unsafe { core::slice::from_raw_parts(self.ptr.add(self.offset), self.len) }
     }
 }
 
@@ -48,7 +48,7 @@ impl Drop for BufferHandle {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use core::num::NonZeroUsize;
 
     use bytes::BufMut;
 
