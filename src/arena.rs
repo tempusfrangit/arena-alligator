@@ -210,7 +210,7 @@ impl BuildConfig {
 
 pub(crate) struct ArenaInner {
     pub(crate) ptr: *mut u8,
-    layout: Layout,
+    pub(crate) total_size: usize,
     pub(crate) slot_capacity: usize,
     pub(crate) slot_count: usize,
     pub(crate) bitmap: AtomicBitmap,
@@ -221,6 +221,7 @@ pub(crate) struct ArenaInner {
     /// `init_policy == Zero`. Write-once: return path sets bits, alloc
     /// path only reads.
     pub(crate) zeroed_bitmap: Option<AtomicBitmap>,
+    dealloc: crate::dealloc::ErasedDealloc,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::WakeHandle>,
 }
@@ -234,9 +235,12 @@ unsafe impl Sync for ArenaInner {}
 
 impl Drop for ArenaInner {
     fn drop(&mut self) {
-        // SAFETY: ptr and layout were produced by std::alloc::alloc in build().
+        // SAFETY: ErasedDealloc::dealloc is called exactly once (here).
+        // We take ownership via std::mem::replace to avoid double-drop.
         unsafe {
-            std::alloc::dealloc(self.ptr, self.layout);
+            let dealloc =
+                std::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
+            dealloc.dealloc(self.ptr, self.total_size);
         }
     }
 }
@@ -305,6 +309,66 @@ impl FixedArena {
         }
     }
 
+    /// Create an arena from user-provided memory.
+    ///
+    /// This is the preallocated-memory path: the arena uses the caller's
+    /// backing region instead of allocating its own. Ownership transfers to
+    /// the returned builder and then to the arena produced by
+    /// [`build()`](RawBackedFixedArenaBuilder::build). When the last arena
+    /// reference drops, the backing region is released through `dealloc`.
+    ///
+    /// Use [`NoDealloc`](crate::NoDealloc) for caller-managed memory such as
+    /// static buffers or externally-owned mappings. For `&'static mut [u8]`,
+    /// prefer the safe [`from_static()`](Self::from_static) wrapper.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a valid, exclusively-owned allocation of at
+    ///   least `len` bytes.
+    /// - The region must not be accessed through any other mutable or shared
+    ///   alias for the lifetime of the arena and any frozen [`Bytes`](bytes::Bytes)
+    ///   derived from it.
+    /// - The memory must remain valid until `D::dealloc` is called, which
+    ///   happens when the last arena reference and last frozen `Bytes`
+    ///   derived from it drop.
+    /// - `dealloc` must correctly release the original region, or be
+    ///   [`NoDealloc`](crate::NoDealloc) if the caller retains
+    ///   responsibility for the backing memory.
+    ///
+    /// If `build()` returns `Err`, the caller retains ownership of the
+    /// memory and remains responsible for releasing it.
+    pub unsafe fn from_raw<D: crate::dealloc::Dealloc>(
+        ptr: *mut u8,
+        len: usize,
+        spec: crate::spec::SlotSpec,
+        dealloc: D,
+    ) -> RawBackedFixedArenaBuilder<D> {
+        RawBackedFixedArenaBuilder {
+            ptr,
+            len,
+            spec,
+            dealloc,
+            config: BuildConfig::new(),
+        }
+    }
+
+    /// Build a fixed arena from a `&'static mut` buffer with [`NoDealloc`](crate::NoDealloc).
+    ///
+    /// This is a safe convenience wrapper over [`from_raw()`](Self::from_raw)
+    /// for static buffers (e.g. linker-placed memory in embedded/no_std).
+    /// The static lifetime guarantees the memory outlives the arena, and
+    /// [`NoDealloc`](crate::NoDealloc) matches the fact that static memory
+    /// must not be freed.
+    pub fn from_static(
+        buf: &'static mut [u8],
+        spec: crate::spec::SlotSpec,
+    ) -> RawBackedFixedArenaBuilder<crate::dealloc::NoDealloc> {
+        // SAFETY: static lifetime guarantees the memory outlives the arena
+        // and all derived Bytes. Exclusive &mut ensures no aliasing.
+        // NoDealloc is correct because static memory must not be freed.
+        unsafe { Self::from_raw(buf.as_mut_ptr(), buf.len(), spec, crate::dealloc::NoDealloc) }
+    }
+
     /// Number of slots in this arena.
     pub fn slot_count(&self) -> usize {
         self.inner.slot_count
@@ -347,11 +411,107 @@ impl FixedArena {
             .record_alloc_success(self.inner.slot_capacity);
 
         Ok(Buffer::new_fixed(
-            Arc::clone(&self.inner),
+            crate::allocation::ArenaRef::Fixed(self.inner.clone()),
+            self.inner.ptr,
+            self.inner.auto_spill,
             slot_idx,
             offset,
             self.inner.slot_capacity,
         ))
+    }
+}
+
+/// Builder for a fixed arena backed by user-provided memory.
+///
+/// Created via [`FixedArena::from_raw()`].
+///
+/// This mirrors the ordinary fixed-arena builder for post-construction
+/// policy knobs, but it does not own the backing allocation itself. The
+/// caller's `D` is erased when [`build()`](Self::build) succeeds.
+pub struct RawBackedFixedArenaBuilder<D: crate::dealloc::Dealloc> {
+    ptr: *mut u8,
+    len: usize,
+    spec: crate::spec::SlotSpec,
+    dealloc: D,
+    config: BuildConfig,
+}
+
+impl<D: crate::dealloc::Dealloc> RawBackedFixedArenaBuilder<D> {
+    /// Set the initialization policy for allocated buffers.
+    ///
+    /// [`InitPolicy::Zero`] zeroes visible slot capacity on first allocation
+    /// and on return, just like the self-allocated builder path.
+    pub fn init_policy(mut self, policy: InitPolicy) -> Self {
+        self.config.init_policy = policy;
+        self
+    }
+
+    /// Set the page size used for prefaulting.
+    ///
+    /// This only affects [`build()`](Self::build) prefault behavior. It does
+    /// not change the caller-provided backing region or its alignment.
+    pub fn page_size(mut self, policy: PageSize) -> Self {
+        self.config.page_size = policy;
+        self
+    }
+
+    /// Set the minimum alignment for each slot.
+    ///
+    /// Slot sizes are padded **down** to this alignment. Must be a power
+    /// of two. The caller is responsible for ensuring the backing pointer
+    /// itself satisfies this alignment.
+    pub fn alignment(mut self, align: usize) -> Self {
+        self.config.alignment = align;
+        self
+    }
+
+    /// Build the arena from user-provided memory.
+    ///
+    /// `SlotSpec` resolves the visible slot geometry from the supplied
+    /// region. Tail bytes that do not fit a whole aligned slot are left
+    /// unused.
+    pub fn build(self) -> Result<FixedArena, BuildError> {
+        if self.ptr.is_null() {
+            return Err(BuildError::NullPointer);
+        }
+        self.config.validate_alignment()?;
+
+        let page_size = self.config.page_size.resolve();
+        let (slot_count, slot_capacity) = self.spec.resolve(self.len, self.config.alignment)?;
+
+        let zeroed_bitmap = match self.config.init_policy {
+            InitPolicy::Zero => Some(AtomicBitmap::new_empty(slot_count)),
+            InitPolicy::Uninit => None,
+        };
+
+        let inner = ArenaInner {
+            ptr: self.ptr,
+            total_size: self.len,
+            slot_capacity,
+            slot_count,
+            bitmap: AtomicBitmap::new(slot_count),
+            auto_spill: false,
+            init_policy: self.config.init_policy,
+            metrics: MetricsState::new(slot_count * slot_capacity),
+            zeroed_bitmap,
+            dealloc: crate::dealloc::ErasedDealloc::new(self.dealloc),
+            #[cfg(feature = "async-alloc")]
+            wake_handle: None,
+        };
+
+        let arena = FixedArena {
+            inner: Arc::new(inner),
+        };
+
+        if let Some(ps) = page_size {
+            prefault_region(
+                arena.inner.ptr,
+                arena.inner.slot_count * arena.inner.slot_capacity,
+                ps,
+            );
+        }
+
+        Ok(arena)
     }
 }
 
@@ -438,7 +598,7 @@ impl<Mode> FixedArenaBuilder<Mode> {
 
         let inner = ArenaInner {
             ptr,
-            layout,
+            total_size,
             slot_capacity: aligned_capacity,
             slot_count,
             bitmap: AtomicBitmap::new(slot_count),
@@ -446,6 +606,7 @@ impl<Mode> FixedArenaBuilder<Mode> {
             init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
             zeroed_bitmap,
+            dealloc: crate::dealloc::ErasedDealloc::new(crate::dealloc::HeapDealloc::new(layout)),
             #[cfg(feature = "async-alloc")]
             wake_handle,
         };

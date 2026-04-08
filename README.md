@@ -111,6 +111,42 @@ let arena = FixedArena::with_slot_capacity(
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
+## Preallocated memory handoff
+
+Use `from_raw()` when the backing region already exists and the arena should
+build on top of it instead of allocating its own memory. This is the path for
+shared memory, mmap'd regions, static buffers, and other externally-provisioned
+storage.
+
+For `&'static mut` buffers, prefer the safe `from_static()` wrapper. Keep
+`from_raw()` for pointer/length regions and custom deallocation strategies.
+
+The unsafe boundary is at construction time: the caller must provide a valid,
+exclusive region and the correct deallocation strategy. After construction, the
+arena uses the same safe `allocate()` / `freeze()` flow as the ordinary builder
+path.
+
+`SlotSpec` derives fixed-slot geometry from a caller-provided region.
+`BuddyHint` derives buddy geometry from the same kind of region.
+Use `NoDealloc` when the caller retains responsibility for freeing the backing
+memory.
+
+```rust
+# use std::num::NonZeroUsize;
+# use arena_alligator::{FixedArena, SlotSpec};
+static mut BLOCK: [u8; 4096] = [0; 4096];
+fn nz(n: usize) -> NonZeroUsize {
+    NonZeroUsize::new(n).unwrap()
+}
+
+#[allow(static_mut_refs)]
+let arena = FixedArena::from_static(unsafe { &mut BLOCK }, SlotSpec::Count(nz(4)))
+    .build()?;
+
+assert_eq!(arena.slot_count(), 4);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
 ## Hazmat raw access
 
 For protocols or layouts that need direct pointer access, enable the

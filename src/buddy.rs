@@ -12,8 +12,8 @@ use crate::sync::atomic::{AtomicUsize, Ordering};
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct BuddyArenaInner {
     pub(crate) ptr: *mut u8,
-    layout: Layout,
     pub(crate) total_size: usize,
+    dealloc_len: usize,
     pub(crate) min_block_size: usize,
     pub(crate) max_order: usize,
     pub(crate) free_bitmaps: Box<[AtomicBitmap]>,
@@ -26,6 +26,7 @@ pub(crate) struct BuddyArenaInner {
     /// when `init_policy == Zero`. Write-once: return path sets bits, alloc
     /// path only reads.
     pub(crate) zeroed_bitmap: Option<AtomicBitmap>,
+    dealloc: crate::dealloc::ErasedDealloc,
     #[cfg(feature = "async-alloc")]
     pub(crate) wake_handle: Option<crate::async_alloc::BuddyWakeHandle>,
 }
@@ -37,9 +38,11 @@ unsafe impl Sync for BuddyArenaInner {}
 
 impl Drop for BuddyArenaInner {
     fn drop(&mut self) {
-        // SAFETY: ptr and layout were produced by std::alloc::alloc in build().
+        // SAFETY: ErasedDealloc::dealloc is called exactly once (here).
         unsafe {
-            std::alloc::dealloc(self.ptr, self.layout);
+            let dealloc =
+                std::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
+            dealloc.dealloc(self.ptr, self.dealloc_len);
         }
     }
 }
@@ -90,6 +93,70 @@ impl BuddyArena {
         }
     }
 
+    /// Create a buddy arena from user-provided memory.
+    ///
+    /// This uses the caller's backing region instead of allocating a new one.
+    /// Ownership transfers to the returned builder and then to the arena
+    /// produced by [`build()`](RawBackedBuddyArenaBuilder::build). When the
+    /// last arena reference drops, the backing region is released through
+    /// `dealloc`.
+    ///
+    /// `hint` controls the derived buddy geometry. The final arena may use
+    /// less than `len` bytes if the usable region must be rounded down to a
+    /// power-of-two buddy layout.
+    ///
+    /// # Safety
+    ///
+    /// - `ptr` must point to a valid, exclusively-owned allocation of at
+    ///   least `len` bytes.
+    /// - The region must not be accessed through any other mutable or shared
+    ///   alias for the lifetime of the arena and any frozen [`Bytes`](bytes::Bytes)
+    ///   derived from it.
+    /// - The memory must remain valid until `D::dealloc` is called, which
+    ///   happens when the last arena reference and last frozen `Bytes`
+    ///   derived from it drop.
+    /// - `dealloc` must correctly release the original region, or be
+    ///   [`NoDealloc`](crate::NoDealloc) if the caller retains
+    ///   responsibility for the backing memory.
+    ///   For `&'static mut [u8]`, prefer the safe
+    ///   [`from_static()`](Self::from_static) wrapper.
+    ///
+    /// If `build()` returns `Err`, the caller retains ownership of the
+    /// memory and remains responsible for releasing it.
+    pub unsafe fn from_raw<D: crate::dealloc::Dealloc>(
+        ptr: *mut u8,
+        len: usize,
+        hint: crate::spec::BuddyHint,
+        dealloc: D,
+    ) -> RawBackedBuddyArenaBuilder<D> {
+        RawBackedBuddyArenaBuilder {
+            ptr,
+            len,
+            hint,
+            dealloc,
+            config: crate::arena::BuildConfig::new(),
+        }
+    }
+
+    /// Build a buddy arena from a `&'static mut` buffer with [`NoDealloc`](crate::NoDealloc).
+    ///
+    /// This is a safe convenience wrapper over [`from_raw()`](Self::from_raw)
+    /// for static buffers (e.g. linker-placed memory in embedded/no_std).
+    /// The static lifetime guarantees the memory outlives the arena, and
+    /// [`NoDealloc`](crate::NoDealloc) matches the fact that static memory
+    /// must not be freed.
+    pub fn from_static(
+        buf: &'static mut [u8],
+        hint: crate::spec::BuddyHint,
+    ) -> RawBackedBuddyArenaBuilder<crate::dealloc::NoDealloc> {
+        // SAFETY: static lifetime guarantees the memory outlives the arena
+        // and all derived Bytes. Exclusive &mut ensures no aliasing.
+        // NoDealloc is correct because static memory must not be freed.
+        unsafe { Self::from_raw(buf.as_mut_ptr(), buf.len(), hint, crate::dealloc::NoDealloc) }
+    }
+}
+
+impl BuddyArena {
     /// Total bytes managed by this arena.
     pub fn total_size(&self) -> usize {
         self.inner.total_size
@@ -111,7 +178,9 @@ impl BuddyArena {
             .metrics
             .buddy_snapshot(self.inner.largest_free_block())
     }
+}
 
+impl BuddyArena {
     /// Allocate a buddy-backed buffer with at least `len` bytes of capacity.
     pub fn allocate(&self, len: NonZeroUsize) -> Result<Buffer, AllocError> {
         let target_order = self.order_for_request(len.get()).ok_or_else(|| {
@@ -157,7 +226,9 @@ impl BuddyArena {
         };
 
         Ok(Buffer::new_buddy(
-            Arc::clone(&self.inner),
+            crate::allocation::ArenaRef::Buddy(self.inner.clone()),
+            self.inner.ptr,
+            self.inner.auto_spill,
             final_order,
             final_block_idx,
             offset,
@@ -262,6 +333,99 @@ impl BuddyArena {
     }
 }
 
+/// Builder for a buddy arena backed by user-provided memory.
+///
+/// Created via [`BuddyArena::from_raw()`].
+///
+/// This mirrors the ordinary buddy builder for post-construction policy
+/// knobs, but derives geometry from a caller-owned region plus a
+/// [`BuddyHint`](crate::BuddyHint).
+pub struct RawBackedBuddyArenaBuilder<D: crate::dealloc::Dealloc> {
+    ptr: *mut u8,
+    len: usize,
+    hint: crate::spec::BuddyHint,
+    dealloc: D,
+    config: crate::arena::BuildConfig,
+}
+
+impl<D: crate::dealloc::Dealloc> RawBackedBuddyArenaBuilder<D> {
+    /// Set the initialization policy for allocated buffers.
+    ///
+    /// [`InitPolicy::Zero`](crate::InitPolicy::Zero) zeroes visible block
+    /// capacity on first allocation and on return, matching the standard
+    /// buddy builder path.
+    pub fn init_policy(mut self, policy: crate::arena::InitPolicy) -> Self {
+        self.config.init_policy = policy;
+        self
+    }
+
+    /// Set the page size used for prefaulting.
+    ///
+    /// This only affects [`build()`](Self::build) prefault behavior. It does
+    /// not change the caller-provided backing region or the derived geometry.
+    pub fn page_size(mut self, policy: crate::arena::PageSize) -> Self {
+        self.config.page_size = policy;
+        self
+    }
+
+    /// Build the arena from user-provided memory.
+    ///
+    /// [`BuddyHint`](crate::BuddyHint) derives the minimum block size and
+    /// maximum order from the supplied region. Any tail bytes outside the
+    /// final power-of-two buddy geometry are left unused.
+    pub fn build(self) -> Result<BuddyArena, BuildError> {
+        if self.ptr.is_null() {
+            return Err(BuildError::NullPointer);
+        }
+
+        let page_size = self.config.page_size.resolve();
+        let (min_block_size, max_order) = self.hint.resolve(self.len)?;
+
+        let mut free_bitmaps = Vec::with_capacity(max_order + 1);
+        for order in 0..=max_order {
+            let block_count = blocks_at_order(max_order, order);
+            free_bitmaps.push(AtomicBitmap::new_empty(block_count));
+        }
+        free_bitmaps[max_order].free(0);
+
+        let order0_count = blocks_at_order(max_order, 0);
+        let total_usable = min_block_size << max_order;
+
+        let zeroed_bitmap = match self.config.init_policy {
+            crate::arena::InitPolicy::Zero => Some(AtomicBitmap::new_empty(order0_count)),
+            crate::arena::InitPolicy::Uninit => None,
+        };
+
+        let inner = BuddyArenaInner {
+            ptr: self.ptr,
+            total_size: total_usable,
+            dealloc_len: self.len,
+            min_block_size,
+            max_order,
+            free_bitmaps: free_bitmaps.into_boxed_slice(),
+            nonempty_orders: AtomicUsize::new(1usize << max_order),
+            auto_spill: false,
+            cap_capacity: false,
+            init_policy: self.config.init_policy,
+            metrics: MetricsState::new(total_usable),
+            zeroed_bitmap,
+            dealloc: crate::dealloc::ErasedDealloc::new(self.dealloc),
+            #[cfg(feature = "async-alloc")]
+            wake_handle: None,
+        };
+
+        let arena = BuddyArena {
+            inner: Arc::new(inner),
+        };
+
+        if let Some(ps) = page_size {
+            crate::arena::prefault_region(arena.inner.ptr, total_usable, ps);
+        }
+
+        Ok(arena)
+    }
+}
+
 /// Builder for [`BuddyArena`].
 ///
 /// The `Mode` parameter controls which build targets are available:
@@ -340,8 +504,8 @@ impl<Mode> BuddyArenaBuilder<Mode> {
 
         let inner = BuddyArenaInner {
             ptr,
-            layout,
             total_size,
+            dealloc_len: total_size,
             min_block_size,
             max_order,
             free_bitmaps: free_bitmaps.into_boxed_slice(),
@@ -351,6 +515,7 @@ impl<Mode> BuddyArenaBuilder<Mode> {
             init_policy: self.config.init_policy,
             metrics: MetricsState::new(total_size),
             zeroed_bitmap,
+            dealloc: crate::dealloc::ErasedDealloc::new(crate::dealloc::HeapDealloc::new(layout)),
             #[cfg(feature = "async-alloc")]
             wake_handle: waker,
         };

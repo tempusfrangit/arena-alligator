@@ -124,7 +124,6 @@ const REVOKED: u8 = 2;
 struct WaiterEntry {
     state: AtomicU8,
     // SAFETY: accessed exactly once by whichever side wins the CAS on `state`.
-    // See the safety contract in .plan/2026-03-06-buddy-wake-starvation.md.
     tx: UnsafeCell<Option<oneshot::Sender<usize>>>,
     timestamp: u64,
     #[allow(dead_code)]

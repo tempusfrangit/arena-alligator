@@ -7,6 +7,15 @@ pub(crate) enum ArenaRef {
     Buddy(Arc<BuddyArenaInner>),
 }
 
+impl Clone for ArenaRef {
+    fn clone(&self) -> Self {
+        match self {
+            ArenaRef::Fixed(arc) => ArenaRef::Fixed(arc.clone()),
+            ArenaRef::Buddy(arc) => ArenaRef::Buddy(arc.clone()),
+        }
+    }
+}
+
 impl ArenaRef {
     pub(crate) fn release(&self, allocation: AllocationKind) {
         match (self, allocation) {
