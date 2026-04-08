@@ -1,7 +1,7 @@
+#[cfg(not(loom))]
+pub(crate) use alloc::sync::Arc;
 #[cfg(loom)]
 pub(crate) use loom::sync::Arc;
-#[cfg(not(loom))]
-pub(crate) use std::sync::Arc;
 
 #[cfg(loom)]
 pub(crate) mod atomic {
@@ -10,5 +10,5 @@ pub(crate) mod atomic {
 
 #[cfg(not(loom))]
 pub(crate) mod atomic {
-    pub(crate) use std::sync::atomic::{AtomicUsize, Ordering};
+    pub(crate) use core::sync::atomic::{AtomicUsize, Ordering};
 }

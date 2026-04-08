@@ -1,5 +1,5 @@
-use std::fmt;
-use std::mem::ManuallyDrop;
+use core::fmt;
+use core::mem::ManuallyDrop;
 
 use bytes::buf::UninitSlice;
 use bytes::{BufMut, Bytes, BytesMut};
@@ -131,7 +131,7 @@ impl Buffer {
     /// (the arena slot was already freed during spill).
     ///
     /// ```
-    /// use std::num::NonZeroUsize;
+    /// use core::num::NonZeroUsize;
     /// use arena_alligator::FixedArena;
     /// use bytes::BufMut;
     ///
@@ -163,7 +163,7 @@ impl Buffer {
         let offset = self.offset;
         let len = self.len;
 
-        std::mem::forget(self);
+        core::mem::forget(self);
 
         let handle = BufferHandle::new(owner, allocation, ptr, offset, len);
         Bytes::from_owner(handle)
@@ -181,7 +181,7 @@ impl Buffer {
 
         let mut buffer = BytesMut::with_capacity(self.len * 2);
         // SAFETY: ptr + offset is valid for self.len bytes (written data).
-        let src = unsafe { std::slice::from_raw_parts(self.ptr.add(self.offset), self.len) };
+        let src = unsafe { core::slice::from_raw_parts(self.ptr.add(self.offset), self.len) };
         buffer.extend_from_slice(src);
 
         self.owner.record_spill();
@@ -260,7 +260,8 @@ unsafe impl BufMut for Buffer {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use alloc::vec;
+    use core::num::NonZeroUsize;
 
     use crate::{BuddyArena, BuddyGeometry, FixedArena};
 

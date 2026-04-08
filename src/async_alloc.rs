@@ -1,11 +1,14 @@
-use std::cell::UnsafeCell;
-use std::fmt;
-use std::future::Future;
-use std::ops::Deref;
-use std::pin::Pin;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::fmt;
+use core::future::Future;
+use core::ops::Deref;
+use core::pin::Pin;
+use core::task::{Context, Poll};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll};
 use std::time::Instant;
 
 use tokio::sync::Notify;
@@ -176,7 +179,7 @@ const ORDER_BONUS_NS: u64 = 50_000; // 50μs per order level
 const DEPTH_BONUS_NS: u64 = 5_000; // 5μs per waiting peer
 
 struct BuddyOrderSlot {
-    queue: Mutex<std::collections::VecDeque<Arc<WaiterEntry>>>,
+    queue: Mutex<alloc::collections::VecDeque<Arc<WaiterEntry>>>,
     count: AtomicUsize,
     head_timestamp: AtomicU64,
 }
@@ -184,7 +187,7 @@ struct BuddyOrderSlot {
 impl BuddyOrderSlot {
     fn new() -> Self {
         Self {
-            queue: Mutex::new(std::collections::VecDeque::new()),
+            queue: Mutex::new(alloc::collections::VecDeque::new()),
             count: AtomicUsize::new(0),
             head_timestamp: AtomicU64::new(NO_WAITERS_TIMESTAMP),
         }
@@ -306,7 +309,7 @@ impl NotifyWaiters {
 
     fn update_head_timestamp(
         &self,
-        queue: &std::collections::VecDeque<Arc<WaiterEntry>>,
+        queue: &alloc::collections::VecDeque<Arc<WaiterEntry>>,
         order: usize,
     ) {
         let slot = &self.inner.buddy_orders[order];
@@ -702,7 +705,7 @@ impl<W: BuddyWaiter> AsyncBuddyArena<W> {
     ///
     /// The buddy bitmaps remain the source of truth; notifications are hints
     /// to retry after free or coalesce publishes a usable block.
-    pub async fn allocate_async(&self, len: std::num::NonZeroUsize) -> Buffer {
+    pub async fn allocate_async(&self, len: core::num::NonZeroUsize) -> Buffer {
         let order = self
             .order_for_request(len.get())
             .unwrap_or(self.max_order());
@@ -735,9 +738,10 @@ impl<W> fmt::Debug for AsyncBuddyArena<W> {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use alloc::sync::Arc;
+    use alloc::vec::Vec;
+    use core::num::NonZeroUsize;
+    use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
     use bytes::BufMut;
     use tokio::time::{Duration, timeout};

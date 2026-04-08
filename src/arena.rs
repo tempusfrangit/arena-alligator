@@ -1,6 +1,6 @@
-use std::alloc::Layout;
-use std::fmt;
-use std::num::NonZeroUsize;
+use core::alloc::Layout;
+use core::fmt;
+use core::num::NonZeroUsize;
 
 use crate::bitmap::AtomicBitmap;
 use crate::buffer::Buffer;
@@ -81,7 +81,7 @@ pub(crate) fn prefault_region(ptr: *mut u8, len: usize, page_size: usize) {
 /// Compiler-guaranteed not to be elided, unlike `ptr::write_bytes`.
 pub(crate) fn zeroize_region(ptr: *mut u8, len: usize) {
     // SAFETY: caller guarantees ptr..ptr+len is a valid, exclusively-owned allocation.
-    let slice = unsafe { std::slice::from_raw_parts_mut(ptr, len) };
+    let slice = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
     zeroize::Zeroize::zeroize(slice);
 }
 
@@ -236,10 +236,10 @@ unsafe impl Sync for ArenaInner {}
 impl Drop for ArenaInner {
     fn drop(&mut self) {
         // SAFETY: ErasedDealloc::dealloc is called exactly once (here).
-        // We take ownership via std::mem::replace to avoid double-drop.
+        // We take ownership via core::mem::replace to avoid double-drop.
         unsafe {
             let dealloc =
-                std::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
+                core::mem::replace(&mut self.dealloc, crate::dealloc::ErasedDealloc::noop());
             dealloc.dealloc(self.ptr, self.total_size);
         }
     }
@@ -275,7 +275,7 @@ impl FixedArena {
             slot_count,
             slot_capacity,
             config: BuildConfig::new(),
-            _mode: std::marker::PhantomData,
+            _mode: core::marker::PhantomData,
         }
     }
 
@@ -285,7 +285,7 @@ impl FixedArena {
     /// rounded up to alignment at build time.
     ///
     /// ```
-    /// use std::num::NonZeroUsize;
+    /// use core::num::NonZeroUsize;
     /// use arena_alligator::FixedArena;
     ///
     /// let arena = FixedArena::with_arena_capacity(
@@ -305,7 +305,7 @@ impl FixedArena {
             // per_slot >= 1 because arena_capacity >= 1 and slot_count >= 1
             slot_capacity: NonZeroUsize::new(per_slot).unwrap(),
             config: BuildConfig::new(),
-            _mode: std::marker::PhantomData,
+            _mode: core::marker::PhantomData,
         }
     }
 
@@ -531,7 +531,7 @@ pub struct FixedArenaBuilder<Mode = Standard> {
     slot_count: NonZeroUsize,
     slot_capacity: NonZeroUsize,
     config: BuildConfig,
-    _mode: std::marker::PhantomData<Mode>,
+    _mode: core::marker::PhantomData<Mode>,
 }
 
 impl<Mode> FixedArenaBuilder<Mode> {
@@ -586,9 +586,9 @@ impl<Mode> FixedArenaBuilder<Mode> {
             .map_err(|_| BuildError::SizeOverflow)?;
 
         // SAFETY: layout has non-zero size (slot_count > 0, aligned_capacity > 0).
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
         if ptr.is_null() {
-            std::alloc::handle_alloc_error(layout);
+            alloc::alloc::handle_alloc_error(layout);
         }
 
         let zeroed_bitmap = match self.config.init_policy {
@@ -656,9 +656,9 @@ impl<Mode> FixedArenaBuilder<Mode> {
         W: crate::async_alloc::Waiter,
     {
         let page_size = self.config.page_size.resolve();
-        let waiters = std::sync::Arc::new(waiters);
+        let waiters = alloc::sync::Arc::new(waiters);
         let arena = self.build_inner(Some(crate::async_alloc::WakeHandle::new(
-            std::sync::Arc::clone(&waiters),
+            alloc::sync::Arc::clone(&waiters),
         )))?;
 
         if let Some(ps) = page_size {
@@ -687,7 +687,7 @@ impl FixedArenaBuilder<Standard> {
                 auto_spill: true,
                 ..self.config
             },
-            _mode: std::marker::PhantomData,
+            _mode: core::marker::PhantomData,
         }
     }
 
@@ -728,7 +728,7 @@ impl FixedArenaBuilder<Standard> {
             slot_count: self.slot_count,
             slot_capacity: self.slot_capacity,
             config: self.config,
-            _mode: std::marker::PhantomData,
+            _mode: core::marker::PhantomData,
         }
     }
 }
@@ -803,7 +803,7 @@ fn align_up(value: usize, alignment: usize) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZeroUsize;
+    use core::num::NonZeroUsize;
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()
@@ -1016,7 +1016,7 @@ mod tests {
 
         // Re-allocate the same slot; zero policy should have cleared it.
         let buf = arena.allocate().unwrap();
-        let slot = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
+        let slot = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
         assert!(slot.iter().all(|&b| b == 0), "slot should be zeroed");
     }
 
@@ -1086,7 +1086,7 @@ mod tests {
         drop(bytes);
 
         let buf = arena.allocate().unwrap();
-        let slot = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
+        let slot = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
         assert!(
             slot.iter().all(|&b| b == 0),
             "slot should be zeroed from return path"
@@ -1102,7 +1102,7 @@ mod tests {
             .unwrap();
 
         let buf = arena.allocate().unwrap();
-        let slot = unsafe { std::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
+        let slot = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 64) };
         assert!(slot.iter().all(|&b| b == 0), "first alloc should be zeroed");
     }
 }

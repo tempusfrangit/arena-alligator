@@ -1,3 +1,4 @@
+use alloc::boxed::Box;
 use core::alloc::Layout;
 
 /// Strategy for deallocating arena backing memory.
@@ -17,7 +18,7 @@ pub unsafe trait Dealloc: Send + Sync + 'static {
     unsafe fn dealloc(self, ptr: *mut u8, len: usize);
 }
 
-/// Frees memory via [`std::alloc::dealloc`] with the stored [`Layout`].
+/// Frees memory via [`alloc::alloc::dealloc`] with the stored [`Layout`].
 ///
 /// This is the default dealloc strategy for arenas that allocate their
 /// own backing memory.
@@ -26,7 +27,7 @@ pub struct HeapDealloc {
 }
 
 impl HeapDealloc {
-    /// Wrap a [`Layout`] for deallocation via [`std::alloc::dealloc`].
+    /// Wrap a [`Layout`] for deallocation via [`alloc::alloc::dealloc`].
     ///
     /// The layout must match the one used to allocate the memory.
     pub fn new(layout: Layout) -> Self {
@@ -34,11 +35,11 @@ impl HeapDealloc {
     }
 }
 
-// SAFETY: dealloc matches the std::alloc::alloc that produced the memory.
+// SAFETY: dealloc matches the alloc::alloc::alloc that produced the memory.
 unsafe impl Dealloc for HeapDealloc {
     unsafe fn dealloc(self, ptr: *mut u8, _len: usize) {
         // SAFETY: caller guarantees ptr was allocated with this layout.
-        unsafe { std::alloc::dealloc(ptr, self.layout) }
+        unsafe { alloc::alloc::dealloc(ptr, self.layout) }
     }
 }
 
@@ -140,7 +141,7 @@ mod tests {
     #[test]
     fn heap_dealloc_frees_memory() {
         let layout = Layout::from_size_align(4096, 8).unwrap();
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
         assert!(!ptr.is_null());
         let dealloc = HeapDealloc::new(layout);
         unsafe { dealloc.dealloc(ptr, 4096) };
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn erased_dealloc_heap() {
         let layout = Layout::from_size_align(4096, 8).unwrap();
-        let ptr = unsafe { std::alloc::alloc(layout) };
+        let ptr = unsafe { alloc::alloc::alloc(layout) };
         assert!(!ptr.is_null());
         let erased = ErasedDealloc::new(HeapDealloc::new(layout));
         unsafe { erased.dealloc(ptr, 4096) };

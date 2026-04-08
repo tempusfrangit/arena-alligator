@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use core::num::NonZeroUsize;
 
 use crate::error::BuildError;
 
@@ -25,7 +25,7 @@ impl BuddyGeometry {
     /// - `total_size < min_block_size`
     ///
     /// ```
-    /// use std::num::NonZeroUsize;
+    /// use core::num::NonZeroUsize;
     /// use arena_alligator::BuddyGeometry;
     ///
     /// let geo = BuddyGeometry::exact(
@@ -66,7 +66,7 @@ impl BuddyGeometry {
     /// requested capacity, not the full block size.
     ///
     /// ```
-    /// use std::num::NonZeroUsize;
+    /// use core::num::NonZeroUsize;
     /// use arena_alligator::BuddyGeometry;
     ///
     /// // 6000 snaps up to 8192, 768 snaps up to 1024
@@ -203,7 +203,7 @@ fn validate_buddy_geometry(total_size: usize, min_block_size: usize) -> Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZeroUsize;
+    use core::num::NonZeroUsize;
 
     fn nz(n: usize) -> NonZeroUsize {
         NonZeroUsize::new(n).unwrap()

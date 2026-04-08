@@ -13,7 +13,7 @@ pub trait BytesExt {
     /// ```
     /// use bytes::BufMut;
     /// use arena_alligator::{FixedArena, BytesExt};
-    /// use std::num::NonZeroUsize;
+    /// use core::num::NonZeroUsize;
     ///
     /// let arena = FixedArena::with_slot_capacity(
     ///     NonZeroUsize::new(4).unwrap(),
@@ -39,7 +39,7 @@ impl BytesExt for Bytes {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroUsize;
+    use core::num::NonZeroUsize;
 
     use bytes::BufMut;
 

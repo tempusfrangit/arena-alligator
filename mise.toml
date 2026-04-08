@@ -99,6 +99,8 @@ depends = ["_doctor:base", "_doctor:nextest"]
 run = [
     { task = "test:nextest" },
     { task = "test:all-features" },
+    { task = "test:no-std" },
+    { task = "test:doc" },
 ]
 
 [tasks."test:nextest"]
@@ -108,8 +110,18 @@ run = 'cargo nextest run'
 
 [tasks."test:all-features"]
 description = "Run tests with all features enabled"
+depends = ["_doctor:base", "_doctor:nextest"]
+run = 'cargo nextest run --all-features'
+
+[tasks."test:no-std"]
+description = "Run tests without std (no-default-features)"
+depends = ["_doctor:base", "_doctor:nextest"]
+run = 'cargo nextest run --no-default-features'
+
+[tasks."test:doc"]
+description = "Run doctests (nextest does not support doctests)"
 depends = ["_doctor:base"]
-run = 'cargo test --all-features'
+run = 'cargo test --all-features --doc'
 
 [tasks."test:hazmat"]
 description = "Run tests with hazmat-raw-access feature"

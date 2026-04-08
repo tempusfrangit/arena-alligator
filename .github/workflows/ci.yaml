@@ -63,7 +63,9 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo nextest run
-      - run: cargo test --all-features
+      - run: cargo nextest run --all-features
+      - run: cargo nextest run --no-default-features
+      - run: cargo test --all-features --doc
 
   miri:
     name: Miri
