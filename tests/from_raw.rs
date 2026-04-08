@@ -90,6 +90,8 @@ fn fixed_from_raw_slot_exceeds_block() {
     .build();
 
     assert_eq!(result.unwrap_err(), BuildError::SlotSizeExceedsBacking);
+    // Build failed -- caller retains ownership per the API contract.
+    unsafe { std::alloc::dealloc(ptr, layout) };
 }
 
 #[test]
@@ -358,6 +360,8 @@ fn buddy_from_raw_too_large_hint() {
     .build();
 
     assert_eq!(result.unwrap_err(), BuildError::ZeroUsableSlots);
+    // Build failed -- caller retains ownership per the API contract.
+    unsafe { std::alloc::dealloc(ptr, layout) };
 }
 
 #[test]
