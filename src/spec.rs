@@ -117,13 +117,9 @@ fn prev_power_of_two(n: usize) -> usize {
 mod tests {
     use super::*;
 
-    fn nz(n: usize) -> NonZeroUsize {
-        NonZeroUsize::new(n).unwrap()
-    }
-
     #[test]
     fn slot_spec_count_derives_size() {
-        let spec = SlotSpec::Count(nz(8));
+        let spec = SlotSpec::Count(NonZeroUsize::new(8).unwrap());
         let (count, size) = spec.resolve(1024, 1).unwrap();
         assert_eq!(count, 8);
         assert_eq!(size, 128);
@@ -131,7 +127,7 @@ mod tests {
 
     #[test]
     fn slot_spec_size_derives_count() {
-        let spec = SlotSpec::Size(nz(256));
+        let spec = SlotSpec::Size(NonZeroUsize::new(256).unwrap());
         let (count, size) = spec.resolve(1024, 1).unwrap();
         assert_eq!(count, 4);
         assert_eq!(size, 256);
@@ -139,7 +135,7 @@ mod tests {
 
     #[test]
     fn slot_spec_size_truncates_tail() {
-        let spec = SlotSpec::Size(nz(300));
+        let spec = SlotSpec::Size(NonZeroUsize::new(300).unwrap());
         let (count, size) = spec.resolve(1024, 1).unwrap();
         assert_eq!(count, 3);
         assert_eq!(size, 300);
@@ -147,14 +143,14 @@ mod tests {
 
     #[test]
     fn slot_spec_size_exceeds_block() {
-        let spec = SlotSpec::Size(nz(5000));
+        let spec = SlotSpec::Size(NonZeroUsize::new(5000).unwrap());
         let result = spec.resolve(4096, 1);
         assert_eq!(result, Err(BuildError::SlotSizeExceedsBacking));
     }
 
     #[test]
     fn slot_spec_count_with_alignment() {
-        let spec = SlotSpec::Count(nz(4));
+        let spec = SlotSpec::Count(NonZeroUsize::new(4).unwrap());
         let (count, size) = spec.resolve(4096, 64).unwrap();
         assert_eq!(count, 4);
         assert_eq!(size, 1024);
@@ -163,14 +159,14 @@ mod tests {
 
     #[test]
     fn slot_spec_zero_usable() {
-        let spec = SlotSpec::Size(nz(100));
+        let spec = SlotSpec::Size(NonZeroUsize::new(100).unwrap());
         let result = spec.resolve(50, 1);
         assert_eq!(result, Err(BuildError::SlotSizeExceedsBacking));
     }
 
     #[test]
     fn buddy_hint_basic() {
-        let hint = BuddyHint::min_alloc(nz(512));
+        let hint = BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap());
         let (min_block, max_order) = hint.resolve(4096).unwrap();
         assert_eq!(min_block, 512);
         assert_eq!(max_order, 3); // 512 * 2^3 = 4096
@@ -178,21 +174,21 @@ mod tests {
 
     #[test]
     fn buddy_hint_snaps_up() {
-        let hint = BuddyHint::min_alloc(nz(500));
+        let hint = BuddyHint::min_alloc(NonZeroUsize::new(500).unwrap());
         let (min_block, _) = hint.resolve(4096).unwrap();
         assert_eq!(min_block, 512); // snapped up to power of two
     }
 
     #[test]
     fn buddy_hint_too_large() {
-        let hint = BuddyHint::min_alloc(nz(8192));
+        let hint = BuddyHint::min_alloc(NonZeroUsize::new(8192).unwrap());
         let result = hint.resolve(4096);
         assert_eq!(result, Err(BuildError::ZeroUsableSlots));
     }
 
     #[test]
     fn buddy_hint_exact_fit() {
-        let hint = BuddyHint::min_alloc(nz(4096));
+        let hint = BuddyHint::min_alloc(NonZeroUsize::new(4096).unwrap());
         let (min_block, max_order) = hint.resolve(4096).unwrap();
         assert_eq!(min_block, 4096);
         assert_eq!(max_order, 0); // only one block

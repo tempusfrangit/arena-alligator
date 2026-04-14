@@ -46,15 +46,14 @@ mod tests {
     use super::*;
     use crate::FixedArena;
 
-    fn nz(n: usize) -> NonZeroUsize {
-        NonZeroUsize::new(n).unwrap()
-    }
-
     #[test]
     fn into_owned_frees_arena_slot() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .build()
+        .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"hello");
         let frozen = buf.freeze();
@@ -68,9 +67,12 @@ mod tests {
 
     #[test]
     fn into_owned_returns_mutable_bytes() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .build()
+        .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"hello");
         let frozen = buf.freeze();
@@ -89,9 +91,12 @@ mod tests {
 
     #[test]
     fn into_owned_does_not_free_while_other_clones_exist() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .build()
+        .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"hello");
         let frozen = buf.freeze();

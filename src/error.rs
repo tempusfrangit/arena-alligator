@@ -112,6 +112,18 @@ mod tests {
             BuildError::InvalidGeometry.to_string(),
             "buddy arena geometry must be a power-of-two multiple of min block size"
         );
+        assert_eq!(
+            BuildError::SlotSizeExceedsBacking.to_string(),
+            "requested slot size exceeds backing memory length"
+        );
+        assert_eq!(
+            BuildError::ZeroUsableSlots.to_string(),
+            "no usable slots fit in the provided backing memory"
+        );
+        assert_eq!(
+            BuildError::NullPointer.to_string(),
+            "null pointer provided to from_raw"
+        );
     }
 
     #[test]

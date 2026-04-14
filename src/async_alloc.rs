@@ -752,10 +752,6 @@ mod tests {
 
     use super::*;
 
-    fn nz(n: usize) -> NonZeroUsize {
-        NonZeroUsize::new(n).unwrap()
-    }
-
     // -- CountingWaiters: implements Waiter (fixed) and BuddyWaiter (buddy) --
 
     #[derive(Clone)]
@@ -780,6 +776,12 @@ mod tests {
 
         fn wakes(&self) -> usize {
             self.wakes.load(AtomicOrdering::Relaxed)
+        }
+
+        async fn wait_for_registrations(&self, n: usize) {
+            while self.registrations() < n {
+                tokio::task::yield_now().await;
+            }
         }
     }
 
@@ -864,9 +866,12 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_async_basic() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
-            .build_async()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(32).unwrap(),
+        )
+        .build_async()
+        .unwrap();
         let mut buf = arena.allocate_async().await;
         buf.put_slice(b"data");
         let bytes = buf.freeze();
@@ -876,20 +881,25 @@ mod tests {
 
     #[tokio::test]
     async fn allocate_async_waits_then_succeeds() {
+        let waiters = CountingWaiters::new(1);
         let arena = Arc::new(
-            FixedArena::with_slot_capacity(nz(1), nz(32))
-                .build_async()
-                .unwrap(),
+            FixedArena::with_slot_capacity(
+                NonZeroUsize::new(1).unwrap(),
+                NonZeroUsize::new(32).unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
         let mut buf = arena.allocate_async().await;
         buf.put_slice(b"blocking");
         let bytes = buf.freeze();
+        let baseline = waiters.registrations();
         let arena2 = Arc::clone(&arena);
         let handle = tokio::spawn(async move {
             let buf = arena2.allocate_async().await;
             buf.capacity()
         });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        waiters.wait_for_registrations(baseline + 1).await;
         drop(bytes);
         let cap = timeout(Duration::from_secs(2), handle)
             .await
@@ -900,9 +910,12 @@ mod tests {
 
     #[tokio::test]
     async fn sync_allocate_still_fast_fails() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(32))
-            .build_async()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(32).unwrap(),
+        )
+        .build_async()
+        .unwrap();
         let _buf = arena.allocate().unwrap();
         let err = arena.allocate().unwrap_err();
         assert_eq!(err, crate::AllocError::ArenaFull);
@@ -910,18 +923,23 @@ mod tests {
 
     #[tokio::test]
     async fn multiple_waiters_all_served() {
+        let waiters = CountingWaiters::new(1);
         let arena = Arc::new(
-            FixedArena::with_slot_capacity(nz(2), nz(32))
-                .build_async()
-                .unwrap(),
+            FixedArena::with_slot_capacity(
+                NonZeroUsize::new(2).unwrap(),
+                NonZeroUsize::new(32).unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
         let buf1 = arena.allocate().unwrap();
         let buf2 = arena.allocate().unwrap();
+        let baseline = waiters.registrations();
         let a1 = Arc::clone(&arena);
         let h1 = tokio::spawn(async move { a1.allocate_async().await.capacity() });
         let a2 = Arc::clone(&arena);
         let h2 = tokio::spawn(async move { a2.allocate_async().await.capacity() });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        waiters.wait_for_registrations(baseline + 2).await;
         drop(buf1);
         drop(buf2);
         let (r1, r2) = tokio::join!(
@@ -934,25 +952,33 @@ mod tests {
 
     #[tokio::test]
     async fn deref_exposes_sync_methods() {
-        let arena = FixedArena::with_slot_capacity(nz(4), nz(64))
-            .build_async()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(4).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .build_async()
+        .unwrap();
         assert_eq!(arena.slot_count(), 4);
         assert_eq!(arena.slot_capacity(), 64);
     }
 
     #[tokio::test]
     async fn fixed_cancellation_no_leak() {
+        let waiters = CountingWaiters::new(1);
         let arena = Arc::new(
-            FixedArena::with_slot_capacity(nz(1), nz(32))
-                .build_async()
-                .unwrap(),
+            FixedArena::with_slot_capacity(
+                NonZeroUsize::new(1).unwrap(),
+                NonZeroUsize::new(32).unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
         let buf = arena.allocate().unwrap();
 
+        let baseline = waiters.registrations();
         let arena2 = Arc::clone(&arena);
         let handle = tokio::spawn(async move { arena2.allocate_async().await });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        waiters.wait_for_registrations(baseline + 1).await;
         handle.abort();
         let _ = handle.await;
 
@@ -985,16 +1011,18 @@ mod tests {
         ready_rx.await.ok();
 
         // Task B: registers after A
+        let (b_ready_tx, b_ready_rx) = tokio::sync::oneshot::channel::<()>();
         let w2 = Arc::clone(&waiters);
         let h_b = tokio::spawn(async move {
             let reg = Waiter::register(&*w2);
             tokio::pin!(reg);
             reg.as_mut().prepare();
+            b_ready_tx.send(()).ok();
             reg.await;
         });
 
-        // Let task B register and start awaiting
-        tokio::task::yield_now().await;
+        // Wait for task B to register and prepare
+        b_ready_rx.await.ok();
 
         // One wake — task A gets the permit (first in Notify queue)
         Waiter::wake(&*waiters);
@@ -1018,15 +1046,17 @@ mod tests {
         let waiters = Arc::new(NotifyWaiters::new(1));
 
         // Single waiter — no peers
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
         let w = Arc::clone(&waiters);
         let h = tokio::spawn(async move {
             let reg = Waiter::register(&*w);
             tokio::pin!(reg);
             reg.as_mut().prepare();
+            ready_tx.send(()).ok();
             reg.await;
         });
 
-        tokio::task::yield_now().await;
+        ready_rx.await.ok();
 
         // Wake the sole waiter
         Waiter::wake(&*waiters);
@@ -1034,16 +1064,18 @@ mod tests {
 
         // No waiters remain. If a stale permit was stored, the next
         // registration would resolve immediately (spurious wake).
+        let (ready_tx2, ready_rx2) = tokio::sync::oneshot::channel::<()>();
         let w2 = Arc::clone(&waiters);
         let h2 = tokio::spawn(async move {
             let reg = Waiter::register(&*w2);
             tokio::pin!(reg);
             reg.as_mut().prepare();
+            ready_tx2.send(()).ok();
             // This must NOT resolve immediately — no real wake happened
             reg.await;
         });
 
-        tokio::task::yield_now().await;
+        ready_rx2.await.ok();
 
         // h2 should still be pending (no stale permit)
         assert!(!h2.is_finished(), "stale permit caused spurious wake");
@@ -1060,15 +1092,19 @@ mod tests {
     async fn fixed_custom_waiter_supported() {
         let waiters = CountingWaiters::new(1);
         let arena = Arc::new(
-            FixedArena::with_slot_capacity(nz(1), nz(32))
-                .build_async_with(waiters.clone())
-                .unwrap(),
+            FixedArena::with_slot_capacity(
+                NonZeroUsize::new(1).unwrap(),
+                NonZeroUsize::new(32).unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
         let buf = arena.allocate().unwrap();
 
+        let baseline = waiters.registrations();
         let arena2 = Arc::clone(&arena);
         let handle = tokio::spawn(async move { arena2.allocate_async().await.capacity() });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        waiters.wait_for_registrations(baseline + 1).await;
         drop(buf);
 
         let cap = timeout(Duration::from_secs(2), handle)
@@ -1076,7 +1112,7 @@ mod tests {
             .expect("should not timeout")
             .expect("task should not panic");
         assert_eq!(cap, 32);
-        assert!(waiters.registrations() >= 1);
+        assert!(waiters.registrations() > baseline);
         assert!(waiters.wakes() >= 1);
     }
 
@@ -1084,20 +1120,30 @@ mod tests {
 
     #[tokio::test]
     async fn buddy_allocate_async_waits_then_succeeds() {
+        let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(4096).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
-        let buf = arena.allocate(nz(2048)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
 
+        let baseline = waiters.registrations();
         let arena2 = Arc::clone(&arena);
         let handle = tokio::spawn(async move {
-            let buf = arena2.allocate_async(nz(2048)).await;
+            let buf = arena2
+                .allocate_async(NonZeroUsize::new(2048).unwrap())
+                .await;
             buf.capacity()
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        waiters.wait_for_registrations(baseline + 1).await;
         drop(buf);
 
         let cap = timeout(Duration::from_secs(2), handle)
@@ -1109,20 +1155,36 @@ mod tests {
 
     #[tokio::test]
     async fn buddy_multiple_waiters_all_served() {
+        let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(4096).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
-        let buf1 = arena.allocate(nz(2048)).unwrap();
-        let buf2 = arena.allocate(nz(2048)).unwrap();
+        let buf1 = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
+        let buf2 = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
 
+        let baseline = waiters.registrations();
         let a1 = Arc::clone(&arena);
-        let h1 = tokio::spawn(async move { a1.allocate_async(nz(2048)).await.capacity() });
+        let h1 = tokio::spawn(async move {
+            a1.allocate_async(NonZeroUsize::new(2048).unwrap())
+                .await
+                .capacity()
+        });
         let a2 = Arc::clone(&arena);
-        let h2 = tokio::spawn(async move { a2.allocate_async(nz(2048)).await.capacity() });
+        let h2 = tokio::spawn(async move {
+            a2.allocate_async(NonZeroUsize::new(2048).unwrap())
+                .await
+                .capacity()
+        });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        waiters.wait_for_registrations(baseline + 2).await;
         drop(buf1);
         drop(buf2);
 
@@ -1138,36 +1200,52 @@ mod tests {
     /// is starved because a small waiter steals the coalesced block.
     #[tokio::test]
     async fn buddy_large_waiter_not_starved_by_small() {
+        let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(4096).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
-        let buf1 = arena.allocate(nz(2048)).unwrap();
-        let buf2 = arena.allocate(nz(2048)).unwrap();
+        let buf1 = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
+        let buf2 = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
 
         let (small_tx, small_rx) = tokio::sync::oneshot::channel::<()>();
+        let (small_ready_tx, small_ready_rx) = tokio::sync::oneshot::channel::<()>();
 
+        let baseline = waiters.registrations();
         let arena_large = Arc::clone(&arena);
-        let large =
-            tokio::spawn(async move { arena_large.allocate_async(nz(4096)).await.capacity() });
-        tokio::task::yield_now().await;
+        let large = tokio::spawn(async move {
+            arena_large
+                .allocate_async(NonZeroUsize::new(4096).unwrap())
+                .await
+                .capacity()
+        });
+        waiters.wait_for_registrations(baseline + 1).await;
 
         let arena_small = Arc::clone(&arena);
         let small = tokio::spawn(async move {
-            let buf = arena_small.allocate_async(nz(512)).await;
+            let buf = arena_small
+                .allocate_async(NonZeroUsize::new(512).unwrap())
+                .await;
             let cap = buf.capacity();
+            small_ready_tx.send(()).ok();
             small_rx.await.ok();
             drop(buf);
             cap
         });
-        tokio::task::yield_now().await;
+        waiters.wait_for_registrations(baseline + 2).await;
 
         drop(buf1);
-        tokio::task::yield_now().await;
+        // Small waiter is woken (freed order 2 satisfies order 0) and allocates.
+        small_ready_rx.await.ok();
 
         drop(buf2);
-        tokio::task::yield_now().await;
 
         small_tx.send(()).ok();
 
@@ -1184,25 +1262,37 @@ mod tests {
         assert_eq!(small_cap, 512);
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn buddy_large_request_unblocks_after_coalesce() {
+        let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(4096).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
-        let buf1 = arena.allocate(nz(2048)).unwrap();
-        let buf2 = arena.allocate(nz(2048)).unwrap();
+        let buf1 = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
+        let buf2 = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
 
+        let baseline = waiters.registrations();
         let arena2 = Arc::clone(&arena);
         let handle = tokio::spawn(async move {
-            let buf = arena2.allocate_async(nz(4096)).await;
+            let buf = arena2
+                .allocate_async(NonZeroUsize::new(4096).unwrap())
+                .await;
             buf.capacity()
         });
 
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        waiters.wait_for_registrations(baseline + 1).await;
         drop(buf1);
-        tokio::time::sleep(Duration::from_millis(25)).await;
+        // Freed order 2 only wakes orders 0..=2; the order-3 waiter is not
+        // woken, so it remains registered and the handle stays pending.
+        tokio::task::yield_now().await;
         assert!(!handle.is_finished());
         drop(buf2);
 
@@ -1215,36 +1305,59 @@ mod tests {
 
     #[tokio::test]
     async fn buddy_cancellation_does_not_leak() {
+        let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(4096).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
-        let buf = arena.allocate(nz(4096)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
 
+        let baseline = waiters.registrations();
         let arena2 = Arc::clone(&arena);
-        let handle = tokio::spawn(async move { arena2.allocate_async(nz(512)).await });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let handle =
+            tokio::spawn(
+                async move { arena2.allocate_async(NonZeroUsize::new(512).unwrap()).await },
+            );
+        waiters.wait_for_registrations(baseline + 1).await;
         handle.abort();
         let _ = handle.await;
 
         drop(buf);
-        let _buf2 = arena.allocate(nz(4096)).unwrap();
+        let _buf2 = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
     }
 
     #[tokio::test]
     async fn buddy_custom_waiter_supported() {
         let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                .build_async_with(waiters.clone())
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(4096).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
-        let buf = arena.allocate(nz(2048)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
 
+        let baseline = waiters.registrations();
         let arena2 = Arc::clone(&arena);
-        let handle = tokio::spawn(async move { arena2.allocate_async(nz(2048)).await.capacity() });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let handle = tokio::spawn(async move {
+            arena2
+                .allocate_async(NonZeroUsize::new(2048).unwrap())
+                .await
+                .capacity()
+        });
+        waiters.wait_for_registrations(baseline + 1).await;
         drop(buf);
 
         let cap = timeout(Duration::from_secs(2), handle)
@@ -1252,7 +1365,7 @@ mod tests {
             .expect("should not timeout")
             .expect("task should not panic");
         assert_eq!(cap, 2048);
-        assert!(waiters.registrations() >= 1);
+        assert!(waiters.registrations() > baseline);
         assert!(waiters.wakes() >= 1);
     }
 
@@ -1260,20 +1373,36 @@ mod tests {
     /// via buddy splitting.
     #[tokio::test]
     async fn buddy_multi_order_waiters_served_via_split() {
+        let waiters = CountingWaiters::new(4);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(4096).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
-        let buf = arena.allocate(nz(4096)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
 
+        let baseline = waiters.registrations();
         let a1 = Arc::clone(&arena);
-        let h1 = tokio::spawn(async move { a1.allocate_async(nz(2048)).await.capacity() });
+        let h1 = tokio::spawn(async move {
+            a1.allocate_async(NonZeroUsize::new(2048).unwrap())
+                .await
+                .capacity()
+        });
 
         let a2 = Arc::clone(&arena);
-        let h2 = tokio::spawn(async move { a2.allocate_async(nz(512)).await.capacity() });
+        let h2 = tokio::spawn(async move {
+            a2.allocate_async(NonZeroUsize::new(512).unwrap())
+                .await
+                .capacity()
+        });
 
-        tokio::task::yield_now().await;
+        waiters.wait_for_registrations(baseline + 2).await;
 
         drop(buf);
 
@@ -1291,40 +1420,50 @@ mod tests {
     /// the count invariant or double-take tx.
     #[tokio::test]
     async fn buddy_cancel_wake_interleaving_count_invariant() {
+        let waiters = CountingWaiters::new(5);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(8192).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
 
         for _ in 0..20 {
             // Allocate individual blocks so each free wakes one waiter
             let mut bufs = Vec::new();
-            while let Ok(buf) = arena.allocate(nz(512)) {
+            while let Ok(buf) = arena.allocate(NonZeroUsize::new(512).unwrap()) {
                 bufs.push(buf);
             }
 
             let waiter_count = 4;
             let cancel_count = 2;
+            let baseline = waiters.registrations();
             let mut handles = Vec::new();
             for _ in 0..waiter_count {
                 let a = Arc::clone(&arena);
-                handles.push(tokio::spawn(async move { a.allocate_async(nz(512)).await }));
+                handles.push(tokio::spawn(async move {
+                    a.allocate_async(NonZeroUsize::new(512).unwrap()).await
+                }));
             }
-            tokio::task::yield_now().await;
+            waiters
+                .wait_for_registrations(baseline + waiter_count)
+                .await;
 
-            // Cancel some waiters
+            // Cancel some waiters (h.await ensures abort completes)
             for h in handles.drain(..cancel_count) {
                 h.abort();
                 let _ = h.await;
             }
-            tokio::task::yield_now().await;
 
-            // Free enough blocks for remaining waiters (one per waiter)
+            // Free enough blocks for remaining waiters
             let remaining = waiter_count - cancel_count;
             for buf in bufs.drain(..remaining) {
                 drop(buf);
-                tokio::task::yield_now().await;
             }
 
             for h in handles {
@@ -1343,20 +1482,30 @@ mod tests {
     /// Teardown while waiters are live must not panic or leak.
     #[tokio::test]
     async fn buddy_teardown_with_live_waiters() {
+        let waiters = CountingWaiters::new(4);
         for _ in 0..20 {
             let arena = Arc::new(
-                BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-                    .build_async()
+                BuddyArena::builder(
+                    BuddyGeometry::exact(
+                        NonZeroUsize::new(4096).unwrap(),
+                        NonZeroUsize::new(512).unwrap(),
+                    )
                     .unwrap(),
+                )
+                .build_async_with(waiters.clone())
+                .unwrap(),
             );
-            let _buf = arena.allocate(nz(4096)).unwrap();
+            let _buf = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
 
+            let baseline = waiters.registrations();
             let mut handles = Vec::new();
             for _ in 0..4 {
                 let a = Arc::clone(&arena);
-                handles.push(tokio::spawn(async move { a.allocate_async(nz(512)).await }));
+                handles.push(tokio::spawn(async move {
+                    a.allocate_async(NonZeroUsize::new(512).unwrap()).await
+                }));
             }
-            tokio::task::yield_now().await;
+            waiters.wait_for_registrations(baseline + 4).await;
 
             // Drop arena while waiters are still registered — they hold Arc clones
             // so no UB, but the waiters will never complete
@@ -1376,41 +1525,56 @@ mod tests {
     /// Under repeated small frees, a large waiter must eventually be served
     /// (not starved indefinitely). This tests the scoring system's time-based
     /// priority escalation.
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn buddy_fairness_large_not_starved_by_repeated_small() {
+        let waiters = CountingWaiters::new(5);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(8192).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
 
         // Fill the arena with small blocks
         let mut bufs = Vec::new();
-        while let Ok(buf) = arena.allocate(nz(512)) {
+        while let Ok(buf) = arena.allocate(NonZeroUsize::new(512).unwrap()) {
             bufs.push(buf);
         }
 
         // Large waiter wants 4096
+        let base = waiters.registrations();
         let arena_large = Arc::clone(&arena);
-        let large_handle =
-            tokio::spawn(async move { arena_large.allocate_async(nz(4096)).await.capacity() });
-        tokio::task::yield_now().await;
+        let large_handle = tokio::spawn(async move {
+            arena_large
+                .allocate_async(NonZeroUsize::new(4096).unwrap())
+                .await
+                .capacity()
+        });
+        waiters.wait_for_registrations(base + 1).await;
 
         // Small waiter wants 512
         let arena_small = Arc::clone(&arena);
         let (small_done_tx, small_done_rx) = tokio::sync::oneshot::channel::<()>();
         let small_handle = tokio::spawn(async move {
-            let buf = arena_small.allocate_async(nz(512)).await;
+            let buf = arena_small
+                .allocate_async(NonZeroUsize::new(512).unwrap())
+                .await;
             let cap = buf.capacity();
             // Hold until signaled
             small_done_rx.await.ok();
             drop(buf);
             cap
         });
-        tokio::task::yield_now().await;
+        waiters.wait_for_registrations(base + 2).await;
 
-        // Free blocks one at a time — small should get served first (lower order),
-        // but eventually enough blocks free to coalesce for large
+        // Free blocks one at a time. On current_thread, yield_now() is
+        // deterministic: each yield gives the woken task exactly one poll
+        // cycle to process its allocation attempt before the next free.
         for buf in bufs.drain(..) {
             drop(buf);
             tokio::task::yield_now().await;
@@ -1436,20 +1600,32 @@ mod tests {
     /// all waiters without deadlock.
     #[tokio::test]
     async fn buddy_fairness_mixed_sizes_no_deadlock() {
+        let waiters = CountingWaiters::new(5);
         let arena = Arc::new(
-            BuddyArena::builder(BuddyGeometry::exact(nz(8192), nz(512)).unwrap())
-                .build_async()
+            BuddyArena::builder(
+                BuddyGeometry::exact(
+                    NonZeroUsize::new(8192).unwrap(),
+                    NonZeroUsize::new(512).unwrap(),
+                )
                 .unwrap(),
+            )
+            .build_async_with(waiters.clone())
+            .unwrap(),
         );
 
         for round in 0..10 {
             let size = if round % 2 == 0 { 2048 } else { 512 };
-            let buf = arena.allocate(nz(size)).unwrap();
+            let buf = arena.allocate(NonZeroUsize::new(size).unwrap()).unwrap();
 
+            let baseline = waiters.registrations();
             let a = Arc::clone(&arena);
-            let handle = tokio::spawn(async move { a.allocate_async(nz(size)).await.capacity() });
+            let handle = tokio::spawn(async move {
+                a.allocate_async(NonZeroUsize::new(size).unwrap())
+                    .await
+                    .capacity()
+            });
 
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            waiters.wait_for_registrations(baseline + 1).await;
             drop(buf);
 
             let cap = timeout(Duration::from_secs(2), handle)

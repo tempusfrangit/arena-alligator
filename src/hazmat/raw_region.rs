@@ -347,30 +347,36 @@ mod tests {
 
     use crate::{BuddyArena, BuddyGeometry, FixedArena};
 
-    fn nz(n: usize) -> NonZeroUsize {
-        NonZeroUsize::new(n).unwrap()
-    }
-
     fn buddy_geo() -> BuddyGeometry {
-        BuddyGeometry::exact(nz(4096), nz(512)).unwrap()
+        BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
     fn raw_region_capacity() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let raw = arena.raw_alloc().unwrap();
         assert_eq!(raw.capacity(), 64);
     }
 
     #[test]
     fn raw_region_freeze_prefix() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
         unsafe { core::ptr::copy_nonoverlapping(b"hello".as_ptr(), ptr, 5) };
@@ -380,10 +386,13 @@ mod tests {
 
     #[test]
     fn raw_region_freeze_subslice() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
         unsafe { core::ptr::copy_nonoverlapping(b"XXhelloXX".as_ptr(), ptr, 9) };
@@ -393,10 +402,13 @@ mod tests {
 
     #[test]
     fn raw_region_freeze_empty() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let raw = arena.raw_alloc().unwrap();
         let bytes = unsafe { raw.freeze(0..0) }.unwrap();
         assert!(bytes.is_empty());
@@ -404,10 +416,13 @@ mod tests {
 
     #[test]
     fn raw_region_freeze_out_of_bounds() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let raw = arena.raw_alloc().unwrap();
         let err = unsafe { raw.freeze(0..65) }.unwrap_err();
         assert_eq!(err.capacity(), 64);
@@ -416,10 +431,13 @@ mod tests {
     #[test]
     #[allow(clippy::reversed_empty_ranges)]
     fn raw_region_freeze_inverted_range() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let raw = arena.raw_alloc().unwrap();
         let err = unsafe { raw.freeze(5..3) }.unwrap_err();
         assert_eq!(err.range(), 5..3);
@@ -427,10 +445,13 @@ mod tests {
 
     #[test]
     fn raw_region_drop_releases_slot() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let raw = arena.raw_alloc().unwrap();
         assert!(arena.raw_alloc().is_err());
         drop(raw);
@@ -439,10 +460,13 @@ mod tests {
 
     #[test]
     fn raw_region_freeze_releases_on_bytes_drop() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         unsafe { raw.as_mut_ptr().write_bytes(0xAB, 8) };
         let bytes = unsafe { raw.freeze(0..8) }.unwrap();
@@ -454,10 +478,13 @@ mod tests {
     #[test]
     fn raw_region_arena_dropped_while_bytes_alive() {
         let bytes = {
-            let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-                .hazmat_raw_access()
-                .build()
-                .unwrap();
+            let arena = FixedArena::with_slot_capacity(
+                NonZeroUsize::new(1).unwrap(),
+                NonZeroUsize::new(64).unwrap(),
+            )
+            .hazmat_raw_access()
+            .build()
+            .unwrap();
             let mut raw = arena.raw_alloc().unwrap();
             let ptr = raw.as_mut_ptr();
             unsafe { core::ptr::copy_nonoverlapping(b"persists".as_ptr(), ptr, 8) };
@@ -468,10 +495,13 @@ mod tests {
 
     #[test]
     fn raw_region_bytes_slicing_retains_arena() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
         unsafe { core::ptr::copy_nonoverlapping(b"hello world".as_ptr(), ptr, 11) };
@@ -492,7 +522,7 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let raw = arena.raw_alloc(nz(512)).unwrap();
+        let raw = arena.raw_alloc(NonZeroUsize::new(512).unwrap()).unwrap();
         assert_eq!(raw.capacity(), 512);
     }
 
@@ -502,19 +532,23 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let raw = arena.raw_alloc(nz(700)).unwrap();
+        let raw = arena.raw_alloc(NonZeroUsize::new(700).unwrap()).unwrap();
         // exact geometry exposes full block capacity
         assert_eq!(raw.capacity(), 1024);
     }
 
     #[test]
     fn buddy_raw_region_cap_capacity() {
-        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap();
         let arena = BuddyArena::builder(geo)
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let raw = arena.raw_alloc(nz(700)).unwrap();
+        let raw = arena.raw_alloc(NonZeroUsize::new(700).unwrap()).unwrap();
         assert_eq!(raw.capacity(), 700);
     }
 
@@ -524,7 +558,7 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let mut raw = arena.raw_alloc(nz(512)).unwrap();
+        let mut raw = arena.raw_alloc(NonZeroUsize::new(512).unwrap()).unwrap();
         let ptr = raw.as_mut_ptr();
         unsafe { core::ptr::copy_nonoverlapping(b"buddy".as_ptr(), ptr, 5) };
         let bytes = unsafe { raw.freeze(0..5) }.unwrap();
@@ -537,10 +571,10 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let raw = arena.raw_alloc(nz(4096)).unwrap();
-        assert!(arena.raw_alloc(nz(512)).is_err());
+        let raw = arena.raw_alloc(NonZeroUsize::new(4096).unwrap()).unwrap();
+        assert!(arena.raw_alloc(NonZeroUsize::new(512).unwrap()).is_err());
         drop(raw);
-        assert!(arena.raw_alloc(nz(512)).is_ok());
+        assert!(arena.raw_alloc(NonZeroUsize::new(512).unwrap()).is_ok());
     }
 
     #[test]
@@ -549,12 +583,12 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let mut raw = arena.raw_alloc(nz(4096)).unwrap();
+        let mut raw = arena.raw_alloc(NonZeroUsize::new(4096).unwrap()).unwrap();
         unsafe { raw.as_mut_ptr().write_bytes(0xAB, 8) };
         let bytes = unsafe { raw.freeze(0..8) }.unwrap();
-        assert!(arena.raw_alloc(nz(512)).is_err());
+        assert!(arena.raw_alloc(NonZeroUsize::new(512).unwrap()).is_err());
         drop(bytes);
-        assert!(arena.raw_alloc(nz(512)).is_ok());
+        assert!(arena.raw_alloc(NonZeroUsize::new(512).unwrap()).is_ok());
     }
 
     #[test]
@@ -563,11 +597,11 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let r1 = arena.raw_alloc(nz(2048)).unwrap();
-        let r2 = arena.raw_alloc(nz(2048)).unwrap();
+        let r1 = arena.raw_alloc(NonZeroUsize::new(2048).unwrap()).unwrap();
+        let r2 = arena.raw_alloc(NonZeroUsize::new(2048).unwrap()).unwrap();
         drop(r1);
         drop(r2);
-        assert!(arena.raw_alloc(nz(4096)).is_ok());
+        assert!(arena.raw_alloc(NonZeroUsize::new(4096).unwrap()).is_ok());
     }
 
     // --- Metrics and InitPolicy tests ---
@@ -576,10 +610,13 @@ mod tests {
 
     #[test]
     fn fixed_raw_alloc_metrics_track_lifecycle() {
-        let arena = FixedArena::with_slot_capacity(nz(2), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let raw = arena.raw_alloc().unwrap();
         let m = arena.metrics();
         assert_eq!(m.allocations_ok, 1);
@@ -593,10 +630,13 @@ mod tests {
 
     #[test]
     fn fixed_raw_alloc_metrics_track_freeze() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let mut raw = arena.raw_alloc().unwrap();
         unsafe { raw.as_mut_ptr().write_bytes(0, 8) };
         let bytes = unsafe { raw.freeze(0..8) }.unwrap();
@@ -614,10 +654,13 @@ mod tests {
 
     #[test]
     fn fixed_raw_alloc_metrics_track_failure() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let _raw = arena.raw_alloc().unwrap();
         let _ = arena.raw_alloc();
 
@@ -628,11 +671,14 @@ mod tests {
 
     #[test]
     fn fixed_raw_alloc_zero_policy_zeroes_memory() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .init_policy(InitPolicy::Zero)
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .init_policy(InitPolicy::Zero)
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
         let raw = arena.raw_alloc().unwrap();
         let slice = raw.as_uninit_slice();
         for byte in slice {
@@ -647,7 +693,7 @@ mod tests {
             .hazmat_raw_access()
             .build()
             .unwrap();
-        let raw = arena.raw_alloc(nz(512)).unwrap();
+        let raw = arena.raw_alloc(NonZeroUsize::new(512).unwrap()).unwrap();
         let slice = raw.as_uninit_slice();
         for byte in &slice[..512] {
             assert_eq!(unsafe { byte.assume_init() }, 0);
@@ -656,11 +702,14 @@ mod tests {
 
     #[test]
     fn fixed_raw_alloc_zero_policy_zeroes_on_return() {
-        let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-            .init_policy(InitPolicy::Zero)
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .init_policy(InitPolicy::Zero)
+        .hazmat_raw_access()
+        .build()
+        .unwrap();
 
         let mut raw = arena.raw_alloc().unwrap();
         let ptr = raw.as_mut_ptr();
@@ -683,13 +732,13 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut raw = arena.raw_alloc(nz(512)).unwrap();
+        let mut raw = arena.raw_alloc(NonZeroUsize::new(512).unwrap()).unwrap();
         let ptr = raw.as_mut_ptr();
         unsafe { core::ptr::write_bytes(ptr, 0xAB, 512) };
         let bytes = unsafe { raw.freeze(0..512) }.unwrap();
         drop(bytes);
 
-        let raw = arena.raw_alloc(nz(512)).unwrap();
+        let raw = arena.raw_alloc(NonZeroUsize::new(512).unwrap()).unwrap();
         let slice = raw.as_uninit_slice();
         for byte in &slice[..512] {
             assert_eq!(unsafe { byte.assume_init() }, 0);

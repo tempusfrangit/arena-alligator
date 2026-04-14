@@ -9,10 +9,6 @@ use arena_alligator::{
 };
 use bytes::BufMut;
 
-fn nz(n: usize) -> NonZeroUsize {
-    NonZeroUsize::new(n).unwrap()
-}
-
 /// Allocate a block on the heap and return (ptr, len, layout).
 fn heap_block(size: usize, align: usize) -> (*mut u8, usize, Layout) {
     let layout = Layout::from_size_align(size, align).unwrap();
@@ -26,10 +22,16 @@ fn heap_block(size: usize, align: usize) -> (*mut u8, usize, Layout) {
 #[test]
 fn fixed_from_raw_count_success() {
     let (ptr, len, layout) = heap_block(4096, 8);
-    let arena =
-        unsafe { FixedArena::from_raw(ptr, len, SlotSpec::Count(nz(4)), HeapDealloc::new(layout)) }
-            .build()
-            .unwrap();
+    let arena = unsafe {
+        FixedArena::from_raw(
+            ptr,
+            len,
+            SlotSpec::Count(NonZeroUsize::new(4).unwrap()),
+            HeapDealloc::new(layout),
+        )
+    }
+    .build()
+    .unwrap();
 
     assert_eq!(arena.slot_count(), 4);
     assert_eq!(arena.slot_capacity(), 1024);
@@ -44,7 +46,12 @@ fn fixed_from_raw_count_success() {
 fn fixed_from_raw_size_success() {
     let (ptr, len, layout) = heap_block(4096, 8);
     let arena = unsafe {
-        FixedArena::from_raw(ptr, len, SlotSpec::Size(nz(512)), HeapDealloc::new(layout))
+        FixedArena::from_raw(
+            ptr,
+            len,
+            SlotSpec::Size(NonZeroUsize::new(512).unwrap()),
+            HeapDealloc::new(layout),
+        )
     }
     .build()
     .unwrap();
@@ -57,7 +64,12 @@ fn fixed_from_raw_size_success() {
 fn fixed_from_raw_size_truncates_tail() {
     let (ptr, len, layout) = heap_block(4096, 8);
     let arena = unsafe {
-        FixedArena::from_raw(ptr, len, SlotSpec::Size(nz(1000)), HeapDealloc::new(layout))
+        FixedArena::from_raw(
+            ptr,
+            len,
+            SlotSpec::Size(NonZeroUsize::new(1000).unwrap()),
+            HeapDealloc::new(layout),
+        )
     }
     .build()
     .unwrap();
@@ -72,7 +84,7 @@ fn fixed_from_raw_null_pointer() {
         FixedArena::from_raw(
             std::ptr::null_mut(),
             4096,
-            SlotSpec::Count(nz(4)),
+            SlotSpec::Count(NonZeroUsize::new(4).unwrap()),
             NoDealloc,
         )
     }
@@ -85,7 +97,12 @@ fn fixed_from_raw_null_pointer() {
 fn fixed_from_raw_slot_exceeds_block() {
     let (ptr, len, layout) = heap_block(256, 8);
     let result = unsafe {
-        FixedArena::from_raw(ptr, len, SlotSpec::Size(nz(512)), HeapDealloc::new(layout))
+        FixedArena::from_raw(
+            ptr,
+            len,
+            SlotSpec::Size(NonZeroUsize::new(512).unwrap()),
+            HeapDealloc::new(layout),
+        )
     }
     .build();
 
@@ -97,11 +114,17 @@ fn fixed_from_raw_slot_exceeds_block() {
 #[test]
 fn fixed_from_raw_alignment_pads_down() {
     let (ptr, len, layout) = heap_block(4096, 64);
-    let arena =
-        unsafe { FixedArena::from_raw(ptr, len, SlotSpec::Count(nz(4)), HeapDealloc::new(layout)) }
-            .alignment(64)
-            .build()
-            .unwrap();
+    let arena = unsafe {
+        FixedArena::from_raw(
+            ptr,
+            len,
+            SlotSpec::Count(NonZeroUsize::new(4).unwrap()),
+            HeapDealloc::new(layout),
+        )
+    }
+    .alignment(64)
+    .build()
+    .unwrap();
 
     assert_eq!(arena.slot_capacity() % 64, 0);
     assert_eq!(arena.slot_capacity(), 1024);
@@ -112,9 +135,16 @@ fn fixed_from_raw_no_dealloc() {
     let block = vec![0u8; 4096].into_boxed_slice();
     let ptr = Box::into_raw(block) as *mut u8;
 
-    let arena = unsafe { FixedArena::from_raw(ptr, 4096, SlotSpec::Count(nz(2)), NoDealloc) }
-        .build()
-        .unwrap();
+    let arena = unsafe {
+        FixedArena::from_raw(
+            ptr,
+            4096,
+            SlotSpec::Count(NonZeroUsize::new(2).unwrap()),
+            NoDealloc,
+        )
+    }
+    .build()
+    .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"no dealloc test");
@@ -131,10 +161,16 @@ fn fixed_from_raw_no_dealloc() {
 #[test]
 fn fixed_from_raw_full_lifecycle() {
     let (ptr, len, layout) = heap_block(4096, 8);
-    let arena =
-        unsafe { FixedArena::from_raw(ptr, len, SlotSpec::Count(nz(1)), HeapDealloc::new(layout)) }
-            .build()
-            .unwrap();
+    let arena = unsafe {
+        FixedArena::from_raw(
+            ptr,
+            len,
+            SlotSpec::Count(NonZeroUsize::new(1).unwrap()),
+            HeapDealloc::new(layout),
+        )
+    }
+    .build()
+    .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"first");
@@ -176,9 +212,16 @@ fn fixed_from_raw_dealloc_called_on_drop() {
         layout,
     };
 
-    let arena = unsafe { FixedArena::from_raw(ptr, 4096, SlotSpec::Count(nz(2)), dealloc) }
-        .build()
-        .unwrap();
+    let arena = unsafe {
+        FixedArena::from_raw(
+            ptr,
+            4096,
+            SlotSpec::Count(NonZeroUsize::new(2).unwrap()),
+            dealloc,
+        )
+    }
+    .build()
+    .unwrap();
 
     assert!(!called.load(Ordering::SeqCst));
     drop(arena);
@@ -205,7 +248,7 @@ fn fixed_from_raw_dealloc_not_called_on_build_failure() {
         FixedArena::from_raw(
             std::ptr::null_mut(),
             4096,
-            SlotSpec::Count(nz(4)),
+            SlotSpec::Count(NonZeroUsize::new(4).unwrap()),
             TrackingDealloc(Arc::clone(&called)),
         )
     }
@@ -223,11 +266,17 @@ fn fixed_from_raw_zero_policy_lifecycle() {
     let (ptr, len, layout) = heap_block(4096, 8);
     unsafe { std::ptr::write_bytes(ptr, 0xAA, len) };
 
-    let arena =
-        unsafe { FixedArena::from_raw(ptr, len, SlotSpec::Count(nz(1)), HeapDealloc::new(layout)) }
-            .init_policy(InitPolicy::Zero)
-            .build()
-            .unwrap();
+    let arena = unsafe {
+        FixedArena::from_raw(
+            ptr,
+            len,
+            SlotSpec::Count(NonZeroUsize::new(1).unwrap()),
+            HeapDealloc::new(layout),
+        )
+    }
+    .init_policy(InitPolicy::Zero)
+    .build()
+    .unwrap();
 
     // Zero policy: allocate, write, freeze, drop, re-allocate should work.
     let mut buf = arena.allocate().unwrap();
@@ -254,7 +303,7 @@ fn buddy_from_raw_success() {
         BuddyArena::from_raw(
             ptr,
             len,
-            BuddyHint::min_alloc(nz(512)),
+            BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap()),
             HeapDealloc::new(layout),
         )
     }
@@ -264,7 +313,7 @@ fn buddy_from_raw_success() {
     assert_eq!(arena.total_size(), 4096);
     assert_eq!(arena.min_block_size(), 512);
 
-    let mut buf = arena.allocate(nz(512)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
     buf.put_slice(b"buddy raw");
     let bytes = buf.freeze();
     assert_eq!(&bytes[..], b"buddy raw");
@@ -277,7 +326,7 @@ fn buddy_from_raw_non_power_of_two_region() {
         BuddyArena::from_raw(
             ptr,
             len,
-            BuddyHint::min_alloc(nz(512)),
+            BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap()),
             HeapDealloc::new(layout),
         )
     }
@@ -313,7 +362,7 @@ fn buddy_from_raw_dealloc_gets_original_len() {
         BuddyArena::from_raw(
             ptr,
             5000,
-            BuddyHint::min_alloc(nz(512)),
+            BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap()),
             LenTracker {
                 len_cell: Arc::clone(&called_with_len),
                 layout,
@@ -337,7 +386,7 @@ fn buddy_from_raw_null_pointer() {
         BuddyArena::from_raw(
             std::ptr::null_mut(),
             4096,
-            BuddyHint::min_alloc(nz(512)),
+            BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap()),
             NoDealloc,
         )
     }
@@ -353,7 +402,7 @@ fn buddy_from_raw_too_large_hint() {
         BuddyArena::from_raw(
             ptr,
             len,
-            BuddyHint::min_alloc(nz(8192)),
+            BuddyHint::min_alloc(NonZeroUsize::new(8192).unwrap()),
             HeapDealloc::new(layout),
         )
     }
@@ -371,18 +420,18 @@ fn buddy_from_raw_full_lifecycle() {
         BuddyArena::from_raw(
             ptr,
             len,
-            BuddyHint::min_alloc(nz(1024)),
+            BuddyHint::min_alloc(NonZeroUsize::new(1024).unwrap()),
             HeapDealloc::new(layout),
         )
     }
     .build()
     .unwrap();
 
-    let mut buf1 = arena.allocate(nz(1024)).unwrap();
+    let mut buf1 = arena.allocate(NonZeroUsize::new(1024).unwrap()).unwrap();
     buf1.put_slice(b"block-a");
     let bytes1 = buf1.freeze();
 
-    let mut buf2 = arena.allocate(nz(1024)).unwrap();
+    let mut buf2 = arena.allocate(NonZeroUsize::new(1024).unwrap()).unwrap();
     buf2.put_slice(b"block-b");
     let bytes2 = buf2.freeze();
 
@@ -393,7 +442,7 @@ fn buddy_from_raw_full_lifecycle() {
     drop(bytes2);
 
     // Re-allocate a coalesced block after returning both.
-    let mut buf3 = arena.allocate(nz(2048)).unwrap();
+    let mut buf3 = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
     buf3.put_slice(b"coalesced");
     let bytes3 = buf3.freeze();
     assert_eq!(&bytes3[..], b"coalesced");
@@ -408,7 +457,7 @@ fn buddy_from_raw_zero_policy_lifecycle() {
         BuddyArena::from_raw(
             ptr,
             len,
-            BuddyHint::min_alloc(nz(4096)),
+            BuddyHint::min_alloc(NonZeroUsize::new(4096).unwrap()),
             HeapDealloc::new(layout),
         )
     }
@@ -416,7 +465,7 @@ fn buddy_from_raw_zero_policy_lifecycle() {
     .build()
     .unwrap();
 
-    let mut buf = arena.allocate(nz(4096)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
     buf.put_slice(b"after zero");
     let bytes = buf.freeze();
     assert_eq!(&bytes[..], b"after zero");
@@ -424,7 +473,7 @@ fn buddy_from_raw_zero_policy_lifecycle() {
 
     // Re-allocate after return-scrub.
     let mut buf2 = arena
-        .allocate(nz(4096))
+        .allocate(NonZeroUsize::new(4096).unwrap())
         .expect("block freed after zero-scrub return");
     buf2.put_slice(b"clean");
     let bytes2 = buf2.freeze();
@@ -436,12 +485,18 @@ fn buddy_from_raw_no_dealloc() {
     let block = vec![0u8; 4096].into_boxed_slice();
     let ptr = Box::into_raw(block) as *mut u8;
 
-    let arena =
-        unsafe { BuddyArena::from_raw(ptr, 4096, BuddyHint::min_alloc(nz(512)), NoDealloc) }
-            .build()
-            .unwrap();
+    let arena = unsafe {
+        BuddyArena::from_raw(
+            ptr,
+            4096,
+            BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap()),
+            NoDealloc,
+        )
+    }
+    .build()
+    .unwrap();
 
-    let mut buf = arena.allocate(nz(512)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
     buf.put_slice(b"no dealloc buddy");
     let bytes = buf.freeze();
     assert_eq!(&bytes[..], b"no dealloc buddy");
@@ -459,9 +514,12 @@ fn fixed_from_static() {
     static mut BLOCK: [u8; 4096] = [0u8; 4096];
 
     #[allow(static_mut_refs)]
-    let arena = FixedArena::from_static(unsafe { &mut BLOCK }, SlotSpec::Count(nz(4)))
-        .build()
-        .unwrap();
+    let arena = FixedArena::from_static(
+        unsafe { &mut BLOCK },
+        SlotSpec::Count(NonZeroUsize::new(4).unwrap()),
+    )
+    .build()
+    .unwrap();
 
     assert_eq!(arena.slot_count(), 4);
     assert_eq!(arena.slot_capacity(), 1024);
@@ -477,13 +535,16 @@ fn buddy_from_static() {
     static mut BLOCK: [u8; 4096] = [0u8; 4096];
 
     #[allow(static_mut_refs)]
-    let arena = BuddyArena::from_static(unsafe { &mut BLOCK }, BuddyHint::min_alloc(nz(512)))
-        .build()
-        .unwrap();
+    let arena = BuddyArena::from_static(
+        unsafe { &mut BLOCK },
+        BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap()),
+    )
+    .build()
+    .unwrap();
 
     assert_eq!(arena.total_size(), 4096);
 
-    let mut buf = arena.allocate(nz(512)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
     buf.put_slice(b"static buddy");
     let bytes = buf.freeze();
     assert_eq!(&bytes[..], b"static buddy");

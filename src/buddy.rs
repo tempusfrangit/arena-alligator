@@ -770,12 +770,12 @@ mod tests {
     use super::*;
     use crate::geometry::BuddyGeometry;
 
-    fn nz(n: usize) -> NonZeroUsize {
-        NonZeroUsize::new(n).unwrap()
-    }
-
     fn geo(total: usize, min_block: usize) -> BuddyGeometry {
-        BuddyGeometry::exact(nz(total), nz(min_block)).unwrap()
+        BuddyGeometry::exact(
+            NonZeroUsize::new(total).unwrap(),
+            NonZeroUsize::new(min_block).unwrap(),
+        )
+        .unwrap()
     }
 
     #[test]
@@ -812,21 +812,24 @@ mod tests {
     #[test]
     fn allocate_rounds_up_request_size() {
         let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
-        let buf = arena.allocate(nz(700)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         assert_eq!(buf.capacity(), 1024);
     }
 
     #[test]
     fn allocate_exhausts_large_block() {
         let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
-        let _buf = arena.allocate(nz(4096)).unwrap();
-        assert_eq!(arena.allocate(nz(512)).unwrap_err(), AllocError::ArenaFull);
+        let _buf = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
+        assert_eq!(
+            arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap_err(),
+            AllocError::ArenaFull
+        );
     }
 
     #[test]
     fn split_path_publishes_sibling_blocks() {
         let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
-        let _buf = arena.allocate(nz(512)).unwrap();
+        let _buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
         assert!(arena.is_block_free(2, 1));
         assert!(arena.is_block_free(1, 1));
         assert!(arena.is_block_free(0, 1));
@@ -835,7 +838,7 @@ mod tests {
     #[test]
     fn coalesce_path_restores_top_block() {
         let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
-        let buf = arena.allocate(nz(512)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
         drop(buf);
         assert_eq!(arena.free_block_count(arena.max_order()), 1);
         assert!(arena.is_block_free(arena.max_order(), 0));
@@ -849,14 +852,19 @@ mod tests {
         assert_eq!(initial.bytes_reserved, 4096);
         assert_eq!(initial.bytes_live, 0);
 
-        let buf = arena.allocate(nz(700)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         let after_alloc = arena.metrics();
         assert_eq!(after_alloc.allocations_ok, 1);
         assert_eq!(after_alloc.allocations_failed, 0);
         assert_eq!(after_alloc.bytes_live, 1024);
 
-        let other = arena.allocate(nz(2048)).unwrap();
-        assert_eq!(arena.allocate(nz(2048)).unwrap_err(), AllocError::ArenaFull);
+        let other = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
+        assert_eq!(
+            arena
+                .allocate(NonZeroUsize::new(2048).unwrap())
+                .unwrap_err(),
+            AllocError::ArenaFull
+        );
         let after_fail = arena.metrics();
         assert_eq!(after_fail.allocations_failed, 1);
         assert_eq!(after_fail.bytes_live, 3072);
@@ -877,7 +885,7 @@ mod tests {
         assert_eq!(initial.coalesces, 0);
         assert_eq!(initial.largest_free_block, 4096);
 
-        let buf = arena.allocate(nz(700)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         let after_split = arena.metrics();
         assert_eq!(after_split.splits, 2);
         assert_eq!(after_split.coalesces, 0);
@@ -893,8 +901,8 @@ mod tests {
     fn metrics_track_partial_coalesce() {
         let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
 
-        let left = arena.allocate(nz(2048)).unwrap();
-        let right = arena.allocate(nz(2048)).unwrap();
+        let left = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
+        let right = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
         let full = arena.metrics();
         assert_eq!(full.largest_free_block, 0);
 
@@ -912,12 +920,14 @@ mod tests {
     #[test]
     fn build_unfaulted_then_fault_pages() {
         let unfaulted = BuddyArena::builder(geo(4096, 512))
-            .page_size(crate::arena::PageSize::Size(nz(4096)))
+            .page_size(crate::arena::PageSize::Size(
+                NonZeroUsize::new(4096).unwrap(),
+            ))
             .build_unfaulted()
             .unwrap();
         let arena = unfaulted.fault_pages();
         assert_eq!(arena.total_size(), 4096);
-        let _buf = arena.allocate(nz(512)).unwrap();
+        let _buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
     }
 
     #[test]
@@ -928,7 +938,7 @@ mod tests {
             .unwrap();
         let arena = unfaulted.into_inner();
         assert_eq!(arena.total_size(), 4096);
-        let _buf = arena.allocate(nz(512)).unwrap();
+        let _buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
     }
 
     #[test]
@@ -942,38 +952,46 @@ mod tests {
             .unwrap();
 
         // Write non-zero data, freeze, drop to return the block.
-        let mut buf = arena.allocate(nz(512)).unwrap();
+        let mut buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
         buf.put_slice(&[0xAB; 512]);
         let bytes = buf.freeze();
         drop(bytes);
 
         // Re-allocate; zero policy should have cleared it.
-        let buf = arena.allocate(nz(512)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
         let block = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 1024) };
         assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
     }
 
     #[test]
     fn nearest_caps_capacity_to_requested() {
-        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap();
         let arena = BuddyArena::builder(geo).build().unwrap();
-        let buf = arena.allocate(nz(700)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         assert_eq!(buf.capacity(), 700);
     }
 
     #[test]
     fn exact_exposes_full_block_capacity() {
         let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
-        let buf = arena.allocate(nz(700)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         assert_eq!(buf.capacity(), 1024);
     }
 
     #[test]
     fn nearest_write_up_to_requested_then_full() {
         use bytes::BufMut;
-        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap();
         let arena = BuddyArena::builder(geo).build().unwrap();
-        let mut buf = arena.allocate(nz(700)).unwrap();
+        let mut buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         buf.put_slice(&vec![0xAB; 700]);
         assert_eq!(buf.len(), 700);
         assert_eq!(buf.remaining_mut(), 0);
@@ -983,7 +1001,7 @@ mod tests {
     fn exact_write_up_to_full_block() {
         use bytes::BufMut;
         let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
-        let mut buf = arena.allocate(nz(700)).unwrap();
+        let mut buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         buf.put_slice(&vec![0xAB; 1024]);
         assert_eq!(buf.len(), 1024);
         assert_eq!(buf.remaining_mut(), 0);
@@ -991,9 +1009,13 @@ mod tests {
 
     #[test]
     fn nearest_metrics_reflect_block_size() {
-        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap();
         let arena = BuddyArena::builder(geo).build().unwrap();
-        let _buf = arena.allocate(nz(700)).unwrap();
+        let _buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
         let m = arena.metrics();
         assert_eq!(m.bytes_live, 1024);
     }
@@ -1008,12 +1030,12 @@ mod tests {
             .build()
             .unwrap();
 
-        let mut buf = arena.allocate(nz(512)).unwrap();
+        let mut buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
         buf.put_slice(&[0xAB; 512]);
         let bytes = buf.freeze();
         drop(bytes);
 
-        let buf = arena.allocate(nz(512)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
         let block = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 512) };
         assert!(
             block.iter().all(|&b| b == 0),
@@ -1030,13 +1052,13 @@ mod tests {
             .unwrap();
 
         // Allocate min-block, return it (zeroes + sets 1 order-0 bit)
-        let buf = arena.allocate(nz(512)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
         drop(buf);
 
         // Allocate a larger block that spans multiple order-0 regions.
         // Some order-0 bits are set (returned), some are not (cold from split siblings).
         // The alloc path should zeroize because not all bits are set.
-        let buf = arena.allocate(nz(4096)).unwrap();
+        let buf = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
         let block = unsafe { core::slice::from_raw_parts(buf.ptr.add(buf.offset), 4096) };
         assert!(block.iter().all(|&b| b == 0), "block should be zeroed");
     }
