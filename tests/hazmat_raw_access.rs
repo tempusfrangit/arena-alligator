@@ -7,16 +7,15 @@ use bytes::BufMut;
 use arena_alligator::hazmat::{RawBuddyArena, RawFixedArena};
 use arena_alligator::{BuddyArena, BuddyGeometry, FixedArena};
 
-fn nz(n: usize) -> NonZeroUsize {
-    NonZeroUsize::new(n).unwrap()
-}
-
 #[test]
 fn fixed_raw_alloc_concurrent_stress() {
-    let arena: RawFixedArena = FixedArena::with_slot_capacity(nz(64), nz(128))
-        .hazmat_raw_access()
-        .build()
-        .unwrap();
+    let arena: RawFixedArena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(64).unwrap(),
+        NonZeroUsize::new(128).unwrap(),
+    )
+    .hazmat_raw_access()
+    .build()
+    .unwrap();
 
     std::thread::scope(|s| {
         for _ in 0..8 {
@@ -40,18 +39,23 @@ fn fixed_raw_alloc_concurrent_stress() {
 
 #[test]
 fn buddy_raw_alloc_concurrent_stress() {
-    let arena: RawBuddyArena =
-        BuddyArena::builder(BuddyGeometry::exact(nz(1024 * 1024), nz(256)).unwrap())
-            .hazmat_raw_access()
-            .build()
-            .unwrap();
+    let arena: RawBuddyArena = BuddyArena::builder(
+        BuddyGeometry::exact(
+            NonZeroUsize::new(1024 * 1024).unwrap(),
+            NonZeroUsize::new(256).unwrap(),
+        )
+        .unwrap(),
+    )
+    .hazmat_raw_access()
+    .build()
+    .unwrap();
 
     std::thread::scope(|s| {
         for _ in 0..8 {
             let arena = &arena;
             s.spawn(move || {
                 for i in 0..500u32 {
-                    if let Ok(mut raw) = arena.raw_alloc(nz(256)) {
+                    if let Ok(mut raw) = arena.raw_alloc(NonZeroUsize::new(256).unwrap()) {
                         let ptr = raw.as_mut_ptr();
                         let data = i.to_le_bytes();
                         unsafe {
@@ -68,10 +72,13 @@ fn buddy_raw_alloc_concurrent_stress() {
 
 #[test]
 fn raw_alloc_and_buffer_coexist() {
-    let arena = FixedArena::with_slot_capacity(nz(4), nz(64))
-        .hazmat_raw_access()
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(4).unwrap(),
+        NonZeroUsize::new(64).unwrap(),
+    )
+    .hazmat_raw_access()
+    .build()
+    .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"buffer");
@@ -88,10 +95,13 @@ fn raw_alloc_and_buffer_coexist() {
 
 #[test]
 fn freeze_subslice_skips_header() {
-    let arena = FixedArena::with_slot_capacity(nz(1), nz(128))
-        .hazmat_raw_access()
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(128).unwrap(),
+    )
+    .hazmat_raw_access()
+    .build()
+    .unwrap();
 
     let mut raw = arena.raw_alloc().unwrap();
     let ptr = raw.as_mut_ptr();
@@ -107,10 +117,13 @@ fn freeze_subslice_skips_header() {
 
 #[test]
 fn bytes_clone_retains_arena_backing() {
-    let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-        .hazmat_raw_access()
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(64).unwrap(),
+    )
+    .hazmat_raw_access()
+    .build()
+    .unwrap();
 
     let mut raw = arena.raw_alloc().unwrap();
     let ptr = raw.as_mut_ptr();

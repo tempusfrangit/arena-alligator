@@ -205,13 +205,13 @@ mod tests {
     use super::*;
     use core::num::NonZeroUsize;
 
-    fn nz(n: usize) -> NonZeroUsize {
-        NonZeroUsize::new(n).unwrap()
-    }
-
     #[test]
     fn exact_valid_geometry() {
-        let geo = BuddyGeometry::exact(nz(4096), nz(512)).unwrap();
+        let geo = BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap();
         assert_eq!(geo.total_size(), 4096);
         assert_eq!(geo.min_block_size(), 512);
         assert_eq!(geo.max_order(), 3);
@@ -221,7 +221,11 @@ mod tests {
     #[test]
     fn exact_rejects_non_pow2_min_block() {
         assert_eq!(
-            BuddyGeometry::exact(nz(4096), nz(768)).unwrap_err(),
+            BuddyGeometry::exact(
+                NonZeroUsize::new(4096).unwrap(),
+                NonZeroUsize::new(768).unwrap()
+            )
+            .unwrap_err(),
             BuildError::InvalidGeometry,
         );
     }
@@ -229,7 +233,11 @@ mod tests {
     #[test]
     fn exact_rejects_non_pow2_multiple_total() {
         assert_eq!(
-            BuddyGeometry::exact(nz(6144), nz(1024)).unwrap_err(),
+            BuddyGeometry::exact(
+                NonZeroUsize::new(6144).unwrap(),
+                NonZeroUsize::new(1024).unwrap()
+            )
+            .unwrap_err(),
             BuildError::InvalidGeometry,
         );
     }
@@ -237,41 +245,58 @@ mod tests {
     #[test]
     fn exact_rejects_total_smaller_than_min_block() {
         assert_eq!(
-            BuddyGeometry::exact(nz(256), nz(512)).unwrap_err(),
+            BuddyGeometry::exact(
+                NonZeroUsize::new(256).unwrap(),
+                NonZeroUsize::new(512).unwrap()
+            )
+            .unwrap_err(),
             BuildError::InvalidGeometry,
         );
     }
 
     #[test]
     fn exact_with_alignment() {
-        let geo = BuddyGeometry::exact(nz(4096), nz(512))
-            .unwrap()
-            .with_alignment(nz(512))
-            .unwrap();
+        let geo = BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap()
+        .with_alignment(NonZeroUsize::new(512).unwrap())
+        .unwrap();
         assert_eq!(geo.alignment(), 512);
     }
 
     #[test]
     fn exact_rejects_alignment_larger_than_min_block() {
-        let err = BuddyGeometry::exact(nz(4096), nz(512))
-            .unwrap()
-            .with_alignment(nz(1024))
-            .unwrap_err();
+        let err = BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap()
+        .with_alignment(NonZeroUsize::new(1024).unwrap())
+        .unwrap_err();
         assert_eq!(err, BuildError::InvalidGeometry);
     }
 
     #[test]
     fn exact_rejects_non_pow2_alignment() {
-        let err = BuddyGeometry::exact(nz(4096), nz(512))
-            .unwrap()
-            .with_alignment(nz(3))
-            .unwrap_err();
+        let err = BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap()
+        .with_alignment(NonZeroUsize::new(3).unwrap())
+        .unwrap_err();
         assert_eq!(err, BuildError::InvalidAlignment);
     }
 
     #[test]
     fn nearest_valid_inputs_unchanged() {
-        let geo = BuddyGeometry::nearest(nz(4096), nz(512)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap();
         assert_eq!(geo.total_size(), 4096);
         assert_eq!(geo.min_block_size(), 512);
         assert_eq!(geo.max_order(), 3);
@@ -279,30 +304,45 @@ mod tests {
 
     #[test]
     fn nearest_snaps_min_block_to_pow2() {
-        let geo = BuddyGeometry::nearest(nz(4096), nz(768)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(768).unwrap(),
+        )
+        .unwrap();
         assert_eq!(geo.min_block_size(), 1024);
     }
 
     #[test]
     fn nearest_snaps_total_up_to_valid_multiple() {
-        let geo = BuddyGeometry::nearest(nz(6000), nz(1024)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(6000).unwrap(),
+            NonZeroUsize::new(1024).unwrap(),
+        )
+        .unwrap();
         assert_eq!(geo.total_size(), 8192);
         assert_eq!(geo.min_block_size(), 1024);
     }
 
     #[test]
     fn nearest_snaps_total_up_when_less_than_min_block() {
-        let geo = BuddyGeometry::nearest(nz(256), nz(512)).unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(256).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap();
         assert_eq!(geo.total_size(), 512);
         assert_eq!(geo.min_block_size(), 512);
     }
 
     #[test]
     fn nearest_with_alignment_adjusts() {
-        let geo = BuddyGeometry::nearest(nz(4096), nz(512))
-            .unwrap()
-            .with_alignment(nz(1024))
-            .unwrap();
+        let geo = BuddyGeometry::nearest(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap()
+        .with_alignment(NonZeroUsize::new(1024).unwrap())
+        .unwrap();
         assert_eq!(geo.alignment(), 1024);
         assert_eq!(geo.min_block_size(), 1024);
         assert_eq!(geo.max_order(), 2);
@@ -310,7 +350,10 @@ mod tests {
 
     #[test]
     fn nearest_overflow_returns_err() {
-        let result = BuddyGeometry::nearest(nz(usize::MAX), nz(usize::MAX >> 1));
+        let result = BuddyGeometry::nearest(
+            NonZeroUsize::new(usize::MAX).unwrap(),
+            NonZeroUsize::new(usize::MAX >> 1).unwrap(),
+        );
         assert_eq!(result.unwrap_err(), BuildError::SizeOverflow);
     }
 }

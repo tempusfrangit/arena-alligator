@@ -4,15 +4,14 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::thread;
 
-fn nz(n: usize) -> NonZeroUsize {
-    NonZeroUsize::new(n).unwrap()
-}
-
 #[test]
 fn freeze_bytes_slice_drop_lifecycle() {
-    let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(64).unwrap(),
+    )
+    .build()
+    .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"hello world");
@@ -37,9 +36,12 @@ fn freeze_bytes_slice_drop_lifecycle() {
 
 #[test]
 fn drop_without_freeze_returns_slot() {
-    let arena = FixedArena::with_slot_capacity(nz(1), nz(64))
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(64).unwrap(),
+    )
+    .build()
+    .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"data that will be abandoned");
@@ -55,10 +57,13 @@ fn drop_without_freeze_returns_slot() {
 
 #[test]
 fn auto_spill_freeze_path() {
-    let arena = FixedArena::with_slot_capacity(nz(1), nz(8))
-        .auto_spill()
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(8).unwrap(),
+    )
+    .auto_spill()
+    .build()
+    .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"12345678");
@@ -75,10 +80,13 @@ fn auto_spill_freeze_path() {
 
 #[test]
 fn auto_spill_drop_path() {
-    let arena = FixedArena::with_slot_capacity(nz(1), nz(4))
-        .auto_spill()
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(4).unwrap(),
+    )
+    .auto_spill()
+    .build()
+    .unwrap();
 
     let mut buf = arena.allocate().unwrap();
     buf.put_slice(b"12345");
@@ -95,9 +103,12 @@ fn auto_spill_drop_path() {
 
 #[test]
 fn exhaustion_returns_arena_full() {
-    let arena = FixedArena::with_slot_capacity(nz(48), nz(16))
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(48).unwrap(),
+        NonZeroUsize::new(16).unwrap(),
+    )
+    .build()
+    .unwrap();
 
     let mut buffers = Vec::with_capacity(48);
     for _ in 0..48 {
@@ -110,24 +121,23 @@ fn exhaustion_returns_arena_full() {
 
 #[test]
 fn concurrent_allocate_free_stress() {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
     use std::sync::Barrier;
-    use std::time::Instant;
 
     fn rand_bool(thread_id: u64, iteration: u64) -> bool {
-        let mut hasher = DefaultHasher::new();
-        thread_id.hash(&mut hasher);
-        iteration.hash(&mut hasher);
-        Instant::now().hash(&mut hasher);
-        hasher.finish() & 1 == 0
+        let mix = thread_id
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(iteration.wrapping_mul(0x6C62_272E_07BB_0143));
+        mix & 1 == 0
     }
 
     let slot_count = 64;
     let arena = Arc::new(
-        FixedArena::with_slot_capacity(nz(slot_count), nz(32))
-            .build()
-            .unwrap(),
+        FixedArena::with_slot_capacity(
+            NonZeroUsize::new(slot_count).unwrap(),
+            NonZeroUsize::new(32).unwrap(),
+        )
+        .build()
+        .unwrap(),
     );
     let threads = 8;
     let iterations = 500;
@@ -171,9 +181,12 @@ fn concurrent_allocate_free_stress() {
 #[test]
 fn arena_dropped_while_bytes_live() {
     let bytes = {
-        let arena = FixedArena::with_slot_capacity(nz(2), nz(64))
-            .build()
-            .unwrap();
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(2).unwrap(),
+            NonZeroUsize::new(64).unwrap(),
+        )
+        .build()
+        .unwrap();
         let mut buf = arena.allocate().unwrap();
         buf.put_slice(b"persists after arena drop");
         buf.freeze()
@@ -184,10 +197,13 @@ fn arena_dropped_while_bytes_live() {
 
 #[test]
 fn alignment_capacity_rounded() {
-    let arena = FixedArena::with_slot_capacity(nz(4), nz(100))
-        .alignment(4096)
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(4).unwrap(),
+        NonZeroUsize::new(100).unwrap(),
+    )
+    .alignment(4096)
+    .build()
+    .unwrap();
 
     assert_eq!(arena.slot_capacity(), 4096);
 
@@ -203,10 +219,13 @@ fn alignment_capacity_rounded() {
 
 #[test]
 fn alignment_write_full_capacity() {
-    let arena = FixedArena::with_slot_capacity(nz(1), nz(1))
-        .alignment(512)
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(1).unwrap(),
+        NonZeroUsize::new(1).unwrap(),
+    )
+    .alignment(512)
+    .build()
+    .unwrap();
 
     assert_eq!(arena.slot_capacity(), 512);
 
@@ -221,9 +240,12 @@ fn alignment_write_full_capacity() {
 
 #[test]
 fn mixed_freeze_and_abandon_all_slots_recover() {
-    let arena = FixedArena::with_slot_capacity(nz(8), nz(32))
-        .build()
-        .unwrap();
+    let arena = FixedArena::with_slot_capacity(
+        NonZeroUsize::new(8).unwrap(),
+        NonZeroUsize::new(32).unwrap(),
+    )
+    .build()
+    .unwrap();
 
     let mut frozen = Vec::new();
     for i in 0..8 {
@@ -257,16 +279,24 @@ fn mixed_freeze_and_abandon_all_slots_recover() {
 
 #[test]
 fn buddy_drop_without_freeze_returns_space() {
-    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-        .build()
-        .unwrap();
+    let arena = BuddyArena::builder(
+        BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap(),
+    )
+    .build()
+    .unwrap();
 
-    let mut buf = arena.allocate(nz(700)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
     buf.put_slice(b"buddy buffer");
 
-    let _large = arena.allocate(nz(2048)).unwrap();
+    let _large = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
     assert_eq!(
-        arena.allocate(nz(2048)).unwrap_err(),
+        arena
+            .allocate(NonZeroUsize::new(2048).unwrap())
+            .unwrap_err(),
         AllocError::ArenaFull,
         "remaining space is too fragmented for another 2 KiB block"
     );
@@ -274,29 +304,40 @@ fn buddy_drop_without_freeze_returns_space() {
     drop(buf);
 
     assert!(
-        arena.allocate(nz(2048)).is_ok(),
+        arena.allocate(NonZeroUsize::new(2048).unwrap()).is_ok(),
         "dropping the 1 KiB block should restore a contiguous 2 KiB region"
     );
 }
 
 #[test]
 fn buddy_mixed_size_churn_recovers_full_arena() {
-    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-        .build()
-        .unwrap();
+    let arena = BuddyArena::builder(
+        BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap(),
+    )
+    .build()
+    .unwrap();
 
-    let a = arena.allocate(nz(512)).unwrap();
-    let b = arena.allocate(nz(1500)).unwrap();
-    let c = arena.allocate(nz(512)).unwrap();
-    let d = arena.allocate(nz(512)).unwrap();
-    let e = arena.allocate(nz(512)).unwrap();
+    let a = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
+    let b = arena.allocate(NonZeroUsize::new(1500).unwrap()).unwrap();
+    let c = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
+    let d = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
+    let e = arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap();
 
-    assert_eq!(arena.allocate(nz(512)).unwrap_err(), AllocError::ArenaFull);
+    assert_eq!(
+        arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap_err(),
+        AllocError::ArenaFull
+    );
 
     drop(c);
     drop(a);
     assert_eq!(
-        arena.allocate(nz(4096)).unwrap_err(),
+        arena
+            .allocate(NonZeroUsize::new(4096).unwrap())
+            .unwrap_err(),
         AllocError::ArenaFull,
         "the remaining live allocations still block full-arena coalescing"
     );
@@ -305,23 +346,31 @@ fn buddy_mixed_size_churn_recovers_full_arena() {
     drop(e);
     drop(b);
 
-    let whole = arena.allocate(nz(4096)).unwrap();
+    let whole = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
     assert_eq!(whole.capacity(), 4096);
 }
 
 #[test]
 fn buddy_freeze_bytes_slice_drop_lifecycle() {
-    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-        .build()
-        .unwrap();
+    let arena = BuddyArena::builder(
+        BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap(),
+    )
+    .build()
+    .unwrap();
 
-    let mut buf = arena.allocate(nz(700)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
     buf.put_slice(b"hello buddy world");
     let bytes = buf.freeze();
 
-    let _other = arena.allocate(nz(2048)).unwrap();
+    let _other = arena.allocate(NonZeroUsize::new(2048).unwrap()).unwrap();
     assert_eq!(
-        arena.allocate(nz(2048)).unwrap_err(),
+        arena
+            .allocate(NonZeroUsize::new(2048).unwrap())
+            .unwrap_err(),
         AllocError::ArenaFull,
         "the frozen 1 KiB block still prevents another 2 KiB coalesce"
     );
@@ -333,7 +382,9 @@ fn buddy_freeze_bytes_slice_drop_lifecycle() {
 
     drop(bytes);
     assert_eq!(
-        arena.allocate(nz(2048)).unwrap_err(),
+        arena
+            .allocate(NonZeroUsize::new(2048).unwrap())
+            .unwrap_err(),
         AllocError::ArenaFull,
         "slices should keep the buddy block pinned after the root Bytes drops"
     );
@@ -341,55 +392,67 @@ fn buddy_freeze_bytes_slice_drop_lifecycle() {
     drop(hello);
     drop(world);
     assert!(
-        arena.allocate(nz(2048)).is_ok(),
+        arena.allocate(NonZeroUsize::new(2048).unwrap()).is_ok(),
         "the buddy block should release after the final slice drops"
     );
 }
 
 #[test]
 fn buddy_auto_spill_freeze_path() {
-    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-        .auto_spill()
-        .build()
-        .unwrap();
+    let arena = BuddyArena::builder(
+        BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap(),
+    )
+    .auto_spill()
+    .build()
+    .unwrap();
 
-    let mut buf = arena.allocate(nz(700)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
     buf.put_slice(&vec![b'a'; 1024]);
     assert!(!buf.is_spilled());
 
     buf.put_slice(&vec![b'b'; 2048]);
     assert!(buf.is_spilled());
     assert!(
-        arena.allocate(nz(4096)).is_ok(),
+        arena.allocate(NonZeroUsize::new(4096).unwrap()).is_ok(),
         "spill should release the buddy block immediately"
     );
 
     let bytes = buf.freeze();
     assert_eq!(bytes.len(), 3072);
     assert!(
-        arena.allocate(nz(4096)).is_ok(),
+        arena.allocate(NonZeroUsize::new(4096).unwrap()).is_ok(),
         "freezing spilled bytes should not retain any buddy allocation"
     );
 }
 
 #[test]
 fn buddy_auto_spill_drop_path() {
-    let arena = BuddyArena::builder(BuddyGeometry::exact(nz(4096), nz(512)).unwrap())
-        .auto_spill()
-        .build()
-        .unwrap();
+    let arena = BuddyArena::builder(
+        BuddyGeometry::exact(
+            NonZeroUsize::new(4096).unwrap(),
+            NonZeroUsize::new(512).unwrap(),
+        )
+        .unwrap(),
+    )
+    .auto_spill()
+    .build()
+    .unwrap();
 
-    let mut buf = arena.allocate(nz(700)).unwrap();
+    let mut buf = arena.allocate(NonZeroUsize::new(700).unwrap()).unwrap();
     buf.put_slice(&vec![b'a'; 1024]);
     buf.put_slice(&vec![b'b'; 2048]);
     assert!(buf.is_spilled());
 
-    let whole = arena.allocate(nz(4096)).unwrap();
+    let whole = arena.allocate(NonZeroUsize::new(4096).unwrap()).unwrap();
     assert_eq!(whole.capacity(), 4096);
     drop(whole);
 
     assert!(
-        arena.allocate(nz(4096)).is_ok(),
+        arena.allocate(NonZeroUsize::new(4096).unwrap()).is_ok(),
         "spilling should release the buddy block before the spilled buffer drops"
     );
 
