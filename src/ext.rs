@@ -4,8 +4,6 @@ use bytes::{Bytes, BytesMut};
 pub trait BytesExt {
     /// Copy the contents to a new heap-backed `BytesMut`, consuming `self`.
     ///
-    /// This always copies the payload into a fresh `BytesMut`.
-    ///
     /// If `self` is the last handle to arena-backed storage, dropping it here
     /// releases the slot or block immediately. Clones and slices keep the arena
     /// allocation pinned until the last related `Bytes` is dropped.

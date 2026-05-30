@@ -327,7 +327,7 @@ impl BuddyArena {
     }
 
     pub(crate) fn block_size(&self, order: usize) -> usize {
-        self.inner.min_block_size << order
+        self.inner.block_size(order)
     }
 
     pub(crate) fn block_offset(&self, order: usize, block_idx: usize) -> usize {

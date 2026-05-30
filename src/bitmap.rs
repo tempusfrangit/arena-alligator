@@ -168,22 +168,16 @@ impl AtomicBitmap {
             let mask = range_mask(start % BITS_PER_WORD, end - first_word * BITS_PER_WORD);
             return self.words[first_word].0.load(Ordering::Acquire) & mask == mask;
         }
-
-        // First partial word
         let first_bit = start % BITS_PER_WORD;
         let first_mask = !((1 as Word).wrapping_shl(first_bit as u32) - 1);
         if self.words[first_word].0.load(Ordering::Acquire) & first_mask != first_mask {
             return false;
         }
-
-        // Full words in the middle
         for w in (first_word + 1)..last_word {
             if self.words[w].0.load(Ordering::Acquire) != Word::MAX {
                 return false;
             }
         }
-
-        // Last partial word
         let last_bit = end - last_word * BITS_PER_WORD;
         let last_mask = if last_bit >= BITS_PER_WORD {
             Word::MAX
@@ -210,20 +204,14 @@ impl AtomicBitmap {
             self.words[first_word].0.fetch_or(mask, Ordering::Release);
             return;
         }
-
-        // First partial word
         let first_bit = start % BITS_PER_WORD;
         let first_mask = !((1 as Word).wrapping_shl(first_bit as u32) - 1);
         self.words[first_word]
             .0
             .fetch_or(first_mask, Ordering::Release);
-
-        // Full words in the middle
         for w in (first_word + 1)..last_word {
             self.words[w].0.fetch_or(Word::MAX, Ordering::Release);
         }
-
-        // Last partial word
         let last_bit = end - last_word * BITS_PER_WORD;
         let last_mask = if last_bit >= BITS_PER_WORD {
             Word::MAX
