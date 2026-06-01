@@ -129,17 +129,14 @@ struct WaiterEntry {
     // SAFETY: accessed exactly once by whichever side wins the CAS on `state`.
     tx: UnsafeCell<Option<oneshot::Sender<usize>>>,
     timestamp: u64,
-    #[allow(dead_code)]
-    order: usize,
 }
 
 impl WaiterEntry {
-    fn new(tx: oneshot::Sender<usize>, timestamp: u64, order: usize) -> Self {
+    fn new(tx: oneshot::Sender<usize>, timestamp: u64) -> Self {
         Self {
             state: AtomicU8::new(LIVE),
             tx: UnsafeCell::new(Some(tx)),
             timestamp,
-            order,
         }
     }
 
@@ -155,7 +152,7 @@ impl WaiterEntry {
 }
 
 // SAFETY: tx is only accessed by the CAS winner, so no data races.
-// The oneshot::Sender is Send, and AtomicU8/u64/usize are Sync.
+// The oneshot::Sender is Send, and AtomicU8/u64 are Sync.
 unsafe impl Send for WaiterEntry {}
 unsafe impl Sync for WaiterEntry {}
 
@@ -207,7 +204,8 @@ struct FixedOrderSlot {
 ///
 /// Fixed arenas use a single `Notify`-based FIFO (order 0 only).
 /// Buddy arenas use per-order mutex queues with CAS-arbitrated oneshot
-/// delivery and 4-factor scoring to prevent starvation.
+/// delivery and age-based scoring (with order and queue-depth bonuses plus
+/// an anti-monopoly streak ban) to prevent starvation.
 #[derive(Clone)]
 pub struct NotifyWaiters {
     inner: Arc<NotifyWaitersInner>,
@@ -333,8 +331,8 @@ impl NotifyWaiters {
         let mut pops: usize = 0;
 
         // Deliver one wake per candidate order. A freed block at order N can
-        // serve waiters at multiple lower orders via splitting, so the wake
-        // across orders rather than stopping at the first delivery.
+        // serve waiters at multiple lower orders via splitting, so wakes fan
+        // out across orders rather than stopping at the first delivery.
         for order in candidates {
             let mut queue = self.inner.buddy_orders[order].queue.lock().unwrap();
             while let Some(entry) = queue.pop_front() {
@@ -365,7 +363,6 @@ impl NotifyWaiters {
                     {
                         self.update_streak(order);
                     }
-                    // Move to next order (one delivery per order)
                     break;
                 }
             }
@@ -376,7 +373,7 @@ impl NotifyWaiters {
         let order = order.min(self.inner.buddy_orders.len() - 1);
         let (tx, rx) = oneshot::channel();
         let timestamp = self.now_ns();
-        let entry = Arc::new(WaiterEntry::new(tx, timestamp, order));
+        let entry = Arc::new(WaiterEntry::new(tx, timestamp));
 
         BuddyRegistration {
             entry: Some(Arc::clone(&entry)),

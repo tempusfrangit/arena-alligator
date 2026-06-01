@@ -63,7 +63,10 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo nextest run
-      - run: cargo nextest run --all-features
+      # typestate_exclusion_compile_fail uses trybuild snapshots that track rustc
+      # diagnostic formatting; the pinned MSRV job below is its validator. Exclude
+      # it here so a floating-stable rustc bump can't break CI on prose drift.
+      - run: cargo nextest run --all-features -E 'not binary(typestate)'
       - run: cargo nextest run --no-default-features
       - run: cargo test --all-features --doc
 

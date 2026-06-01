@@ -114,7 +114,6 @@ impl BuddyGeometry {
                 ..self
             });
         }
-        // alignment > min_block_size
         if !self.cap_capacity {
             return Err(BuildError::InvalidGeometry);
         }
