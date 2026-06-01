@@ -48,6 +48,10 @@
 
 # mise
 !mise.toml
+!mise.lock
+
+# hk (git hooks)
+!hk.pkl
 
 # Rust toolchain
 !/rust-toolchain.toml
