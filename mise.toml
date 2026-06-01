@@ -111,7 +111,8 @@ run = 'cargo nextest run'
 [tasks."test:all-features"]
 description = "Run tests with all features enabled"
 depends = ["_doctor:base", "_doctor:nextest"]
-run = 'cargo nextest run --all-features'
+# typestate snapshots are rustc-version-sensitive; run them via `test:typestate`.
+run = "cargo nextest run --all-features -E 'not binary(typestate)'"
 
 [tasks."test:no-std"]
 description = "Run tests without std (no-default-features)"
@@ -126,7 +127,13 @@ run = 'cargo test --all-features --doc'
 [tasks."test:hazmat"]
 description = "Run tests with hazmat-raw-access feature"
 depends = ["_doctor:base", "_doctor:nextest"]
-run = 'cargo nextest run --features hazmat-raw-access'
+# typestate snapshots are rustc-version-sensitive; run them via `test:typestate`.
+run = "cargo nextest run --features hazmat-raw-access -E 'not binary(typestate)'"
+
+[tasks."test:typestate"]
+description = "Run rustc-version-sensitive typestate compile-fail snapshots (CI runs these on the pinned MSRV job)"
+depends = ["_doctor:base", "_doctor:nextest"]
+run = "cargo nextest run --all-features -E 'binary(typestate)'"
 
 [tasks."test:cargo"]
 description = "Run tests with cargo test"
