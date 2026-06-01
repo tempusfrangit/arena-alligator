@@ -2,7 +2,8 @@
 # arena-alligator development tasks
 # =============================================================================
 #
-# mise is a task runner only. Tools are managed externally:
+# mise runs tasks and manages `hk` (the git hook runner). Other tools stay
+# external:
 #   - Rust toolchain: rust-toolchain.toml (rustup)
 #   - cargo-nextest: cargo binstall cargo-nextest
 #   - cargo-deny: cargo binstall cargo-deny
@@ -10,6 +11,22 @@
 # Run `mise tasks` to see available tasks.
 # Run `mise run doctor` to check all tools are installed.
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# Settings
+# -----------------------------------------------------------------------------
+[settings]
+experimental = true
+lockfile = true
+
+# -----------------------------------------------------------------------------
+# Tools (mise-managed)
+# -----------------------------------------------------------------------------
+
+[tools]
+hk = "1.46.0"
+# hk has no non-pkl config format; pkl is required to evaluate hk.pkl.
+pkl = "0.31.1"
 
 # -----------------------------------------------------------------------------
 # Doctor tasks - verify tools are installed
@@ -48,6 +65,18 @@ description = "Check that all development tools are installed"
 run = [
     { tasks = ["_doctor:base", "_doctor:nextest", "_doctor:deny"] },
 ]
+
+# -----------------------------------------------------------------------------
+# Git hooks (hk)
+# -----------------------------------------------------------------------------
+
+[tasks."hooks:install"]
+description = "Install hk git hooks (pre-commit format, pre-push lint + test)"
+run = 'hk install'
+
+[tasks."hooks:uninstall"]
+description = "Remove hk git hooks"
+run = 'hk uninstall'
 
 # -----------------------------------------------------------------------------
 # Format

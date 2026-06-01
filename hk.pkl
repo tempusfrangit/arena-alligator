@@ -1,0 +1,62 @@
+amends "package://github.com/jdx/hk/releases/download/v1.46.0/hk@1.46.0#/Config.pkl"
+import "package://github.com/jdx/hk/releases/download/v1.46.0/hk@1.46.0#/Builtins.pkl"
+
+// cargo commands operate on the whole crate, so each step gates on any Rust
+// change via `glob` rather than passing the matched file list.
+local fmt = new Step {
+    glob = "**/*.rs"
+    check = "cargo fmt --check"
+    fix = "cargo fmt"
+}
+
+local clippy = new Step {
+    glob = "**/*.rs"
+    check = "cargo clippy --all-targets --all-features -- -D warnings"
+}
+
+// typestate snapshots are rustc-version-sensitive; they are validated on the
+// pinned MSRV CI job (mise `test:typestate`), so the hook excludes them.
+local test = new Step {
+    glob = "**/*.rs"
+    check = "cargo nextest run --all-features -E 'not binary(typestate)'"
+}
+
+local doctest = new Step {
+    glob = "**/*.rs"
+    check = "cargo test --all-features --doc"
+}
+
+hooks {
+    // Fast and fixing: format staged Rust before the commit lands.
+    ["pre-commit"] {
+        fix = true
+        stash = "git"
+        steps {
+            ["fmt"] = fmt
+        }
+    }
+    // The real gate: mirror CI before sharing.
+    ["pre-push"] {
+        steps {
+            ["fmt"] = fmt
+            ["clippy"] = clippy
+            ["test"] = test
+            ["doctest"] = doctest
+        }
+    }
+    // `hk fix` / `hk check` entry points for manual runs.
+    ["fix"] {
+        fix = true
+        steps {
+            ["fmt"] = fmt
+        }
+    }
+    ["check"] {
+        steps {
+            ["fmt"] = fmt
+            ["clippy"] = clippy
+            ["test"] = test
+            ["doctest"] = doctest
+        }
+    }
+}
