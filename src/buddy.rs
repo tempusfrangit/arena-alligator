@@ -136,7 +136,7 @@ impl BuddyArena {
             len,
             hint,
             dealloc,
-            config: crate::arena::BuildConfig::new(),
+            config: crate::arena::BuildConfig::new_raw_backed(),
         }
     }
 
@@ -361,20 +361,13 @@ impl<D: crate::dealloc::Dealloc> RawBackedBuddyArenaBuilder<D> {
         self
     }
 
-    /// Set the page size used for prefaulting.
-    ///
-    /// This only affects [`build()`](Self::build) prefault behavior. It does
-    /// not change the caller-provided backing region or the derived geometry.
-    pub fn page_size(mut self, policy: crate::arena::PageSize) -> Self {
-        self.config.page_size = policy;
-        self
-    }
-
     /// Build the arena from user-provided memory.
     ///
     /// [`BuddyHint`](crate::BuddyHint) derives the minimum block size and
     /// maximum order from the supplied region. Any tail bytes outside the
-    /// final power-of-two buddy geometry are left unused.
+    /// final power-of-two buddy geometry are left unused. Raw-backed builders
+    /// cannot enable prefault, so `build()` never writes to or otherwise
+    /// modifies the caller-provided region.
     pub fn build(self) -> Result<BuddyArena, BuildError> {
         if self.ptr.is_null() {
             return Err(BuildError::NullPointer);
