@@ -5,7 +5,7 @@ use crate::sync::atomic::{AtomicUsize, Ordering};
 pub struct FixedArenaMetrics {
     /// Successful arena-backed allocations.
     pub allocations_ok: u64,
-    /// Failed allocation attempts that returned `ArenaFull`.
+    /// Failed allocation attempts (`ArenaFull` or `RequestTooLarge`).
     pub allocations_failed: u64,
     /// Releases back to allocator control.
     pub frees: u64,
@@ -24,7 +24,7 @@ pub struct FixedArenaMetrics {
 pub struct BuddyArenaMetrics {
     /// Successful arena-backed allocations.
     pub allocations_ok: u64,
-    /// Failed allocation attempts that returned `ArenaFull`.
+    /// Failed allocation attempts (`ArenaFull` or `RequestTooLarge`).
     pub allocations_failed: u64,
     /// Releases back to allocator control.
     pub frees: u64,

@@ -248,6 +248,7 @@ fn alloc_fixed_retry(arena: &FixedArena) -> arena_alligator::Buffer {
         match arena.allocate() {
             Ok(buf) => return buf,
             Err(AllocError::ArenaFull) => std::hint::spin_loop(),
+            Err(other) => panic!("unexpected allocation error: {other}"),
         }
     }
 }
@@ -257,6 +258,7 @@ fn alloc_buddy_retry(arena: &BuddyArena, len: usize) -> arena_alligator::Buffer 
         match arena.allocate(nz(len)) {
             Ok(buf) => return buf,
             Err(AllocError::ArenaFull) => std::hint::spin_loop(),
+            Err(other) => panic!("unexpected allocation error: {other}"),
         }
     }
 }

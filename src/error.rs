@@ -2,15 +2,21 @@ use core::fmt;
 
 /// Allocation failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AllocError {
-    /// All slots are in use.
+    /// The arena is temporarily exhausted: every slot or block of the needed
+    /// size is in use. A later attempt may succeed once buffers are freed.
     ArenaFull,
+    /// The request is larger than the arena can ever satisfy, regardless of
+    /// free space. Retrying will never succeed.
+    RequestTooLarge,
 }
 
 impl fmt::Display for AllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AllocError::ArenaFull => write!(f, "arena is full"),
+            AllocError::RequestTooLarge => write!(f, "request exceeds total arena capacity"),
         }
     }
 }
@@ -19,6 +25,7 @@ impl core::error::Error for AllocError {}
 
 /// Builder configuration error.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BuildError {
     /// `slot_count * aligned_capacity` overflows `usize`.
     SizeOverflow,
@@ -60,6 +67,7 @@ impl core::error::Error for BuildError {}
 
 /// Buffer capacity exceeded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BufferFullError {
     /// Bytes remaining in the buffer.
     pub remaining: usize,
@@ -90,6 +98,14 @@ mod tests {
     fn alloc_error_display() {
         let err = AllocError::ArenaFull;
         assert_eq!(err.to_string(), "arena is full");
+    }
+
+    #[test]
+    fn request_too_large_display() {
+        assert_eq!(
+            AllocError::RequestTooLarge.to_string(),
+            "request exceeds total arena capacity"
+        );
     }
 
     #[test]
