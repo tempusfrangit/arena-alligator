@@ -175,6 +175,54 @@ pub struct Standard;
 pub struct AutoSpill;
 
 /// Typestate marker for hazmat raw-access builder mode.
+///
+/// Hazmat mode and [`AutoSpill`] mode are mutually exclusive: a builder that has
+/// entered one mode cannot transition to the other. Both orderings fail to
+/// compile, for fixed and buddy arenas alike.
+///
+/// ```compile_fail
+/// use arena_alligator::FixedArena;
+/// use core::num::NonZeroUsize;
+/// let _ = FixedArena::with_slot_capacity(
+///     NonZeroUsize::new(4).unwrap(),
+///     NonZeroUsize::new(64).unwrap(),
+/// )
+/// .auto_spill()
+/// .hazmat_raw_access();
+/// ```
+///
+/// ```compile_fail
+/// use arena_alligator::FixedArena;
+/// use core::num::NonZeroUsize;
+/// let _ = FixedArena::with_slot_capacity(
+///     NonZeroUsize::new(4).unwrap(),
+///     NonZeroUsize::new(64).unwrap(),
+/// )
+/// .hazmat_raw_access()
+/// .auto_spill();
+/// ```
+///
+/// ```compile_fail
+/// use arena_alligator::{BuddyArena, BuddyGeometry};
+/// use core::num::NonZeroUsize;
+/// let geo = BuddyGeometry::exact(
+///     NonZeroUsize::new(4096).unwrap(),
+///     NonZeroUsize::new(512).unwrap(),
+/// )
+/// .unwrap();
+/// let _ = BuddyArena::builder(geo).auto_spill().hazmat_raw_access();
+/// ```
+///
+/// ```compile_fail
+/// use arena_alligator::{BuddyArena, BuddyGeometry};
+/// use core::num::NonZeroUsize;
+/// let geo = BuddyGeometry::exact(
+///     NonZeroUsize::new(4096).unwrap(),
+///     NonZeroUsize::new(512).unwrap(),
+/// )
+/// .unwrap();
+/// let _ = BuddyArena::builder(geo).hazmat_raw_access().auto_spill();
+/// ```
 #[cfg(feature = "hazmat-raw-access")]
 #[derive(Debug, Clone, Copy)]
 pub struct HazmatRaw;

@@ -14,11 +14,9 @@ local clippy = new Step {
     check = "cargo clippy --all-targets --all-features -- -D warnings"
 }
 
-// typestate snapshots are rustc-version-sensitive; they are validated on the
-// pinned MSRV CI job (mise `test:typestate`), so the hook excludes them.
 local test = new Step {
     glob = "**/*.rs"
-    check = "cargo nextest run --all-features -E 'not binary(typestate)'"
+    check = "cargo nextest run --all-features"
 }
 
 local doctest = new Step {
