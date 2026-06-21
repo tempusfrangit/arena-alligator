@@ -248,6 +248,12 @@ impl BuildConfig {
         }
     }
 
+    pub(crate) fn new_raw_backed() -> Self {
+        let mut config = Self::new();
+        config.page_size = PageSize::Unknown;
+        config
+    }
+
     pub(crate) fn validate_alignment(&self) -> Result<(), BuildError> {
         if !self.alignment.is_power_of_two() {
             return Err(BuildError::InvalidAlignment);
@@ -396,7 +402,7 @@ impl FixedArena {
             len,
             spec,
             dealloc,
-            config: BuildConfig::new(),
+            config: BuildConfig::new_raw_backed(),
         }
     }
 
@@ -494,15 +500,6 @@ impl<D: crate::dealloc::Dealloc> RawBackedFixedArenaBuilder<D> {
         self
     }
 
-    /// Set the page size used for prefaulting.
-    ///
-    /// This only affects [`build()`](Self::build) prefault behavior. It does
-    /// not change the caller-provided backing region or its alignment.
-    pub fn page_size(mut self, policy: PageSize) -> Self {
-        self.config.page_size = policy;
-        self
-    }
-
     /// Set the minimum alignment for each slot.
     ///
     /// Slot sizes are padded **down** to this alignment. Must be a power
@@ -517,7 +514,8 @@ impl<D: crate::dealloc::Dealloc> RawBackedFixedArenaBuilder<D> {
     ///
     /// `SlotSpec` resolves the visible slot geometry from the supplied
     /// region. Tail bytes that do not fit a whole aligned slot are left
-    /// unused.
+    /// unused. Raw-backed builders cannot enable prefault, so `build()`
+    /// never writes to or otherwise modifies the caller-provided region.
     pub fn build(self) -> Result<FixedArena, BuildError> {
         if self.ptr.is_null() {
             return Err(BuildError::NullPointer);

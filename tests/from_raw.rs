@@ -17,6 +17,13 @@ fn heap_block(size: usize, align: usize) -> (*mut u8, usize, Layout) {
     (ptr, size, layout)
 }
 
+fn raw_bytes_all_eq(ptr: *const u8, len: usize, expected: u8) -> bool {
+    (0..len).all(|offset| {
+        // SAFETY: callers pass a live region with at least `len` readable bytes.
+        unsafe { ptr.add(offset).read_volatile() == expected }
+    })
+}
+
 // ── FixedArena::from_raw ─────────────────────────────────────────────
 
 #[test]
@@ -531,6 +538,27 @@ fn fixed_from_static() {
 }
 
 #[test]
+fn fixed_from_static_build_preserves_contents() {
+    static mut BLOCK: [u8; 8192] = [0xA5; 8192];
+
+    #[allow(static_mut_refs)]
+    let arena = FixedArena::from_static(
+        unsafe { &mut BLOCK },
+        SlotSpec::Count(NonZeroUsize::new(4).unwrap()),
+    )
+    .build()
+    .unwrap();
+
+    drop(arena);
+
+    assert!(raw_bytes_all_eq(
+        core::ptr::addr_of!(BLOCK).cast::<u8>(),
+        8192,
+        0xA5
+    ));
+}
+
+#[test]
 fn buddy_from_static() {
     static mut BLOCK: [u8; 4096] = [0u8; 4096];
 
@@ -548,4 +576,25 @@ fn buddy_from_static() {
     buf.put_slice(b"static buddy");
     let bytes = buf.freeze();
     assert_eq!(&bytes[..], b"static buddy");
+}
+
+#[test]
+fn buddy_from_static_build_preserves_contents() {
+    static mut BLOCK: [u8; 8192] = [0x5A; 8192];
+
+    #[allow(static_mut_refs)]
+    let arena = BuddyArena::from_static(
+        unsafe { &mut BLOCK },
+        BuddyHint::min_alloc(NonZeroUsize::new(512).unwrap()),
+    )
+    .build()
+    .unwrap();
+
+    drop(arena);
+
+    assert!(raw_bytes_all_eq(
+        core::ptr::addr_of!(BLOCK).cast::<u8>(),
+        8192,
+        0x5A
+    ));
 }
