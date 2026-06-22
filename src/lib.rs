@@ -96,7 +96,10 @@
 //! # Async allocation
 //!
 //! With the `async-alloc` feature, [`AsyncFixedArena`] and [`AsyncBuddyArena`]
-//! provide `allocate_async()` which waits until capacity is available.
+//! provide `allocate_async()`, which parks until capacity is available. The
+//! buddy variant returns a `Result` and fails fast with
+//! [`AllocError::RequestTooLarge`] for a request larger than the arena could
+//! ever satisfy, rather than parking forever.
 //!
 //! # `no_std`
 //!
