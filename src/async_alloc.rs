@@ -334,12 +334,18 @@ impl NotifyWaiters {
         // serve waiters at multiple lower orders via splitting, so wakes fan
         // out across orders rather than stopping at the first delivery.
         for order in candidates {
+            if pops >= MAX_POPS_PER_WAKE {
+                break;
+            }
             let mut queue = self.inner.buddy_orders[order].queue.lock().unwrap();
-            while let Some(entry) = queue.pop_front() {
+            // Check the bound before popping. An entry popped here but not
+            // delivered is lost from the queue with its count never decremented
+            // and its oneshot never fired, stranding a live waiter forever.
+            while pops < MAX_POPS_PER_WAKE {
+                let Some(entry) = queue.pop_front() else {
+                    break;
+                };
                 pops += 1;
-                if pops > MAX_POPS_PER_WAKE {
-                    return;
-                }
 
                 if entry.state.load(AtomicOrdering::Relaxed) != LIVE {
                     continue;
@@ -1565,6 +1571,64 @@ mod tests {
                 let _ = h.await;
             }
         }
+    }
+
+    /// A run of tombstones filling the pop bound, with a live waiter behind
+    /// them, must not drop the live waiter: it stays queued with its count
+    /// intact, and a later wake delivers it. The pre-fix code popped the
+    /// bound-exceeding entry before the bound check and dropped it on return,
+    /// stranding the waiter forever.
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_wake_pop_bound_does_not_strand_live_waiter() {
+        use crate::sync::atomic::Ordering as CountOrdering;
+
+        let waiters = NotifyWaiters::new(1);
+        let slot = &waiters.inner.buddy_orders[0];
+
+        // Keep the live entry alive (as a real waiter's registration would) so
+        // the bug manifests as a strand, not a deallocation.
+        let (live_tx, mut live_rx) = tokio::sync::oneshot::channel::<usize>();
+        let live = Arc::new(WaiterEntry::new(live_tx, 1));
+        {
+            let mut queue = slot.queue.lock().unwrap();
+            for _ in 0..MAX_POPS_PER_WAKE {
+                let tombstone = Arc::new(WaiterEntry::new(
+                    tokio::sync::oneshot::channel::<usize>().0,
+                    0,
+                ));
+                tombstone.state.store(REVOKED, AtomicOrdering::Relaxed);
+                queue.push_back(tombstone);
+            }
+            queue.push_back(Arc::clone(&live));
+            slot.count.store(1, CountOrdering::Relaxed);
+            slot.head_timestamp.store(1, AtomicOrdering::Relaxed);
+        }
+
+        // First wake exhausts the bound on tombstones; the live waiter survives.
+        waiters.buddy_wake(0);
+        {
+            let queue = slot.queue.lock().unwrap();
+            let live_queued = queue
+                .iter()
+                .filter(|e| e.state.load(AtomicOrdering::Relaxed) == LIVE)
+                .count();
+            assert_eq!(live_queued, 1, "live waiter stranded by the pop bound");
+        }
+        assert_eq!(
+            slot.count.load(CountOrdering::Relaxed),
+            1,
+            "count corrupted"
+        );
+        assert!(live_rx.try_recv().is_err(), "waiter woken prematurely");
+
+        // Tombstones are now cleared; the next wake delivers the survivor.
+        waiters.buddy_wake(0);
+        assert_eq!(
+            live_rx.try_recv().ok(),
+            Some(0),
+            "surviving waiter never delivered"
+        );
     }
 
     // -- Fairness regression tests --
