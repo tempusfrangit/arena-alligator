@@ -187,7 +187,7 @@ impl BuddyArena {
     pub fn allocate(&self, len: NonZeroUsize) -> Result<Buffer, AllocError> {
         let target_order = self.order_for_request(len.get()).ok_or_else(|| {
             self.inner.metrics.record_alloc_failure();
-            AllocError::ArenaFull
+            AllocError::RequestTooLarge
         })?;
 
         let (order, block_idx) = self
@@ -816,6 +816,17 @@ mod tests {
         assert_eq!(
             arena.allocate(NonZeroUsize::new(512).unwrap()).unwrap_err(),
             AllocError::ArenaFull
+        );
+    }
+
+    #[test]
+    fn allocate_oversized_request_too_large() {
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
+        assert_eq!(
+            arena
+                .allocate(NonZeroUsize::new(8192).unwrap())
+                .unwrap_err(),
+            AllocError::RequestTooLarge
         );
     }
 

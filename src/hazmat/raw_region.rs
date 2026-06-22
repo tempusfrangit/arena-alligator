@@ -115,7 +115,7 @@ impl RawBuddyArena {
 
         let target_order = arena.order_for_request(len.get()).ok_or_else(|| {
             inner.metrics.record_alloc_failure();
-            AllocError::ArenaFull
+            AllocError::RequestTooLarge
         })?;
 
         let (order, block_idx) = arena
