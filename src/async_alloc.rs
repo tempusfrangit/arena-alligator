@@ -702,14 +702,27 @@ impl<W: BuddyWaiter> AsyncBuddyArena<W> {
     ///
     /// The buddy bitmaps remain the source of truth; notifications are hints
     /// to retry after free or coalesce publishes a usable block.
-    pub async fn allocate_async(&self, len: core::num::NonZeroUsize) -> Buffer {
-        let order = self
-            .order_for_request(len.get())
-            .unwrap_or(self.max_order());
-        allocate_with_buddy_waiter(self.waiters.as_ref(), order, || {
-            self.inner.allocate(len).ok()
-        })
-        .await
+    ///
+    /// Returns [`AllocError::RequestTooLarge`](crate::AllocError::RequestTooLarge)
+    /// immediately when `len` exceeds the arena's total capacity: no free or
+    /// coalesce could ever satisfy it, so waiting would never return.
+    pub async fn allocate_async(
+        &self,
+        len: core::num::NonZeroUsize,
+    ) -> Result<Buffer, crate::AllocError> {
+        // A request no block can ever satisfy must fail fast; parking would wait
+        // forever. Defer to the sync path, which records the failure and returns
+        // `RequestTooLarge`. Only transient `ArenaFull` is worth waiting on.
+        let order = match self.order_for_request(len.get()) {
+            Some(order) => order,
+            None => return self.inner.allocate(len),
+        };
+        Ok(
+            allocate_with_buddy_waiter(self.waiters.as_ref(), order, || {
+                self.inner.allocate(len).ok()
+            })
+            .await,
+        )
     }
 }
 
@@ -1136,7 +1149,8 @@ mod tests {
         let handle = tokio::spawn(async move {
             let buf = arena2
                 .allocate_async(NonZeroUsize::new(2048).unwrap())
-                .await;
+                .await
+                .unwrap();
             buf.capacity()
         });
 
@@ -1148,6 +1162,30 @@ mod tests {
             .expect("should not timeout")
             .expect("task should not panic");
         assert_eq!(cap, 2048);
+    }
+
+    #[tokio::test]
+    async fn buddy_allocate_async_oversized_fails_fast() {
+        let arena = BuddyArena::builder(
+            BuddyGeometry::exact(
+                NonZeroUsize::new(4096).unwrap(),
+                NonZeroUsize::new(512).unwrap(),
+            )
+            .unwrap(),
+        )
+        .build_async()
+        .unwrap();
+
+        // A request larger than the whole arena can never be satisfied by any
+        // free or coalesce, so it must return immediately rather than park.
+        let err = timeout(
+            Duration::from_secs(1),
+            arena.allocate_async(NonZeroUsize::new(8192).unwrap()),
+        )
+        .await
+        .expect("oversized request must not hang")
+        .unwrap_err();
+        assert_eq!(err, crate::AllocError::RequestTooLarge);
     }
 
     #[tokio::test]
@@ -1172,12 +1210,14 @@ mod tests {
         let h1 = tokio::spawn(async move {
             a1.allocate_async(NonZeroUsize::new(2048).unwrap())
                 .await
+                .unwrap()
                 .capacity()
         });
         let a2 = Arc::clone(&arena);
         let h2 = tokio::spawn(async move {
             a2.allocate_async(NonZeroUsize::new(2048).unwrap())
                 .await
+                .unwrap()
                 .capacity()
         });
 
@@ -1221,6 +1261,7 @@ mod tests {
             arena_large
                 .allocate_async(NonZeroUsize::new(4096).unwrap())
                 .await
+                .unwrap()
                 .capacity()
         });
         waiters.wait_for_registrations(baseline + 1).await;
@@ -1229,7 +1270,8 @@ mod tests {
         let small = tokio::spawn(async move {
             let buf = arena_small
                 .allocate_async(NonZeroUsize::new(512).unwrap())
-                .await;
+                .await
+                .unwrap();
             let cap = buf.capacity();
             small_ready_tx.send(()).ok();
             small_rx.await.ok();
@@ -1281,7 +1323,8 @@ mod tests {
         let handle = tokio::spawn(async move {
             let buf = arena2
                 .allocate_async(NonZeroUsize::new(4096).unwrap())
-                .await;
+                .await
+                .unwrap();
             buf.capacity()
         });
 
@@ -1352,6 +1395,7 @@ mod tests {
             arena2
                 .allocate_async(NonZeroUsize::new(2048).unwrap())
                 .await
+                .unwrap()
                 .capacity()
         });
         waiters.wait_for_registrations(baseline + 1).await;
@@ -1389,6 +1433,7 @@ mod tests {
         let h1 = tokio::spawn(async move {
             a1.allocate_async(NonZeroUsize::new(2048).unwrap())
                 .await
+                .unwrap()
                 .capacity()
         });
 
@@ -1396,6 +1441,7 @@ mod tests {
         let h2 = tokio::spawn(async move {
             a2.allocate_async(NonZeroUsize::new(512).unwrap())
                 .await
+                .unwrap()
                 .capacity()
         });
 
@@ -1444,7 +1490,9 @@ mod tests {
             for _ in 0..waiter_count {
                 let a = Arc::clone(&arena);
                 handles.push(tokio::spawn(async move {
-                    a.allocate_async(NonZeroUsize::new(512).unwrap()).await
+                    a.allocate_async(NonZeroUsize::new(512).unwrap())
+                        .await
+                        .unwrap()
                 }));
             }
             waiters
@@ -1499,7 +1547,9 @@ mod tests {
             for _ in 0..4 {
                 let a = Arc::clone(&arena);
                 handles.push(tokio::spawn(async move {
-                    a.allocate_async(NonZeroUsize::new(512).unwrap()).await
+                    a.allocate_async(NonZeroUsize::new(512).unwrap())
+                        .await
+                        .unwrap()
                 }));
             }
             waiters.wait_for_registrations(baseline + 4).await;
@@ -1550,6 +1600,7 @@ mod tests {
             arena_large
                 .allocate_async(NonZeroUsize::new(4096).unwrap())
                 .await
+                .unwrap()
                 .capacity()
         });
         waiters.wait_for_registrations(base + 1).await;
@@ -1560,7 +1611,8 @@ mod tests {
         let small_handle = tokio::spawn(async move {
             let buf = arena_small
                 .allocate_async(NonZeroUsize::new(512).unwrap())
-                .await;
+                .await
+                .unwrap();
             let cap = buf.capacity();
             // Hold until signaled
             small_done_rx.await.ok();
@@ -1619,6 +1671,7 @@ mod tests {
             let handle = tokio::spawn(async move {
                 a.allocate_async(NonZeroUsize::new(size).unwrap())
                     .await
+                    .unwrap()
                     .capacity()
             });
 

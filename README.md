@@ -217,7 +217,7 @@ rules for buddy raw allocations.
 
 ## Async allocation
 
-With the `async-alloc` feature, both arena types support `allocate_async()`. The task waits until capacity becomes available instead of busy-looping or falling back to the heap.
+With the `async-alloc` feature, both arena types support `allocate_async()`. The task waits until capacity becomes available instead of busy-looping or falling back to the heap. `AsyncBuddyArena::allocate_async()` returns a `Result`: it fails fast with `AllocError::RequestTooLarge` for a request larger than the arena could ever satisfy, instead of waiting forever.
 
 ```toml
 [dependencies]
