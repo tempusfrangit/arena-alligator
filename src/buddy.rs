@@ -259,7 +259,11 @@ impl BuddyArena {
     }
 
     pub(crate) fn order_for_request(&self, len: usize) -> Option<usize> {
-        let size = len.max(self.inner.min_block_size).next_power_of_two();
+        // checked: len > usize::MAX/2 would panic in debug and wrap to 0 in
+        // release, and the wrapped 0 slips past the total_size guard.
+        let size = len
+            .max(self.inner.min_block_size)
+            .checked_next_power_of_two()?;
         if size > self.inner.total_size {
             return None;
         }
@@ -825,6 +829,27 @@ mod tests {
         assert_eq!(
             arena
                 .allocate(NonZeroUsize::new(8192).unwrap())
+                .unwrap_err(),
+            AllocError::RequestTooLarge
+        );
+    }
+
+    /// A request beyond the largest representable power of two must fail
+    /// cleanly. The unchecked `next_power_of_two` panicked in debug and
+    /// wrapped to 0 in release, and the wrapped 0 slipped past the
+    /// total_size guard into a bogus order.
+    #[test]
+    fn allocate_len_overflowing_power_of_two_is_too_large() {
+        let arena = BuddyArena::builder(geo(4096, 512)).build().unwrap();
+        assert_eq!(
+            arena
+                .allocate(NonZeroUsize::new(usize::MAX / 2 + 2).unwrap())
+                .unwrap_err(),
+            AllocError::RequestTooLarge
+        );
+        assert_eq!(
+            arena
+                .allocate(NonZeroUsize::new(usize::MAX).unwrap())
                 .unwrap_err(),
             AllocError::RequestTooLarge
         );
