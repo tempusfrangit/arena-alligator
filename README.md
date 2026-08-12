@@ -327,7 +327,7 @@ mise tasks --all
 The crate is exercised under standard tests, doctests, examples, and targeted concurrency validation:
 
 - `miri` checks unsafe code paths for undefined behavior regressions.
-- `loom` models the sync and async coordination paths under many thread interleavings.
+- `loom` models the atomic bitmap claim/release paths under many thread interleavings. The async waiter machinery is validated with targeted concurrency and cancellation tests, not loom.
 - CI also runs formatting, clippy, docs, examples, and MSRV coverage.
 
 ## Deployment guides
