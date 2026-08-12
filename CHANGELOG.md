@@ -1,14 +1,28 @@
 # Changelog
 
-## 0.6.1
+## 0.7.0
 
-`0.6.1` expands the crate's deployment surface and low-level control.
+`0.7.0` breaks the API contract that `0.6.0` established: breaking changes were to ship with adapters instead. That is not possible here. `AsyncBuddyArena::allocate_async()` promised to always return a `Buffer`, but a request larger than the arena can ever satisfy never resolves and the future hangs forever. An adapter over that signature would either have to invent a `Buffer` that cannot exist or keep the hang.
+
+Breaking changes:
+
+- `AsyncBuddyArena::allocate_async()` now returns `Result<Buffer, AllocError>`. Requests that can never fit fail fast with `RequestTooLarge`; transient exhaustion still parks the caller until capacity frees.
+- `AllocError` separates permanent from transient failure: `RequestTooLarge` means the request can never fit, `ArenaFull` remains the retryable signal. `AllocError`, `BuildError`, and `BufferFullError` are now `#[non_exhaustive]`, so future variants will not require another break.
+- The arena builders are typestate-parameterized: `FixedArenaBuilder<Mode = Standard>` and `BuddyArenaBuilder<Mode = Standard>`, with `auto_spill()` moving the builder into its `AutoSpill` mode instead of returning `Self`. Fluent chains compile unchanged. Code that names a builder type explicitly, or binds the result of `auto_spill()` to the unparameterized type, must update.
+
+Fixes:
+
+- Raw-backed builders (`from_raw()` / `from_static()`) never write to caller-provided memory during build; the backing region survives `build()` byte-for-byte.
+- `buddy_wake` no longer strands a live waiter when stale queue entries exhaust the per-wake pop bound.
+- A buddy waiter cancelled between wake delivery and its next poll no longer swallows the wake. The wake is recovered on drop and handed to the next waiter, through a chain of cancelled waiters if needed.
+- Oversized buddy requests that would overflow power-of-two rounding fail with `RequestTooLarge` instead of panicking in debug builds or computing a corrupt block order in release builds.
+
+New features:
 
 - The `hazmat-raw-access` feature adds `RawFixedArena`, `RawBuddyArena`, and `RawRegion` for direct pointer access when callers need to bypass `Buffer` and `BufMut`.
-- `FixedArena` and `BuddyArena` now support preallocated-memory handoff through `from_raw()`, plus safe `from_static()` helpers for `&'static mut` buffers in embedded and other caller-managed setups.
-- The crate now supports `#![no_std]` + `alloc` builds, with CI coverage for `--no-default-features` and the `async-alloc` path remaining opt-in behind `std`.
-- `InitPolicy::Zero` is now a stronger security guarantee: arena memory is scrubbed on return to the free pool and cold memory is zeroed on first allocation, closing the reuse gap in the previous behavior.
-- The stronger `InitPolicy::Zero` behavior now applies consistently across fixed, buddy, and hazmat raw-access paths, with zeroing performed through the `zeroize` crate.
+- `FixedArena` and `BuddyArena` support preallocated-memory handoff through `from_raw()`, plus safe `from_static()` helpers for `&'static mut` buffers in embedded and other caller-managed setups.
+- The crate supports `#![no_std]` + `alloc` builds, with CI coverage for `--no-default-features`; the `async-alloc` path remains opt-in behind `std`.
+- `InitPolicy::Zero` is a stronger security guarantee: arena memory is scrubbed on return to the free pool and cold memory is zeroed on first allocation, applied consistently across fixed, buddy, and hazmat raw-access paths through the `zeroize` crate.
 
 ## 0.6.0
 
