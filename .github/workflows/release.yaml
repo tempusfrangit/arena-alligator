@@ -35,7 +35,7 @@ jobs:
           tool: cargo-deny,cargo-nextest
 
       - name: Install mise
-        uses: jdx/mise-action@v3
+        uses: jdx/mise-action@v4
         with:
           install: false
 
