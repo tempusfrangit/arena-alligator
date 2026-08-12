@@ -247,12 +247,14 @@ impl NotifyWaiters {
     fn now_ns(&self) -> u64 {
         self.inner.epoch.elapsed().as_nanos() as u64
     }
+}
 
+impl NotifyWaitersInner {
     // -- Buddy wake scoring --
 
     fn score_orders(&self, freed_order: usize) -> Vec<usize> {
-        let max = freed_order.min(self.inner.buddy_orders.len() - 1);
-        let streak = self.inner.streak_state.load(AtomicOrdering::Relaxed);
+        let max = freed_order.min(self.buddy_orders.len() - 1);
+        let streak = self.streak_state.load(AtomicOrdering::Relaxed);
         let last_winner = (streak >> 32) as usize;
         let streak_count = streak as u32;
 
@@ -262,7 +264,7 @@ impl NotifyWaiters {
         let mut candidates: Vec<(usize, u64)> = Vec::new();
 
         for order in 0..=max {
-            let slot = &self.inner.buddy_orders[order];
+            let slot = &self.buddy_orders[order];
             let count = slot.count.load(Ordering::Acquire);
             if count == 0 {
                 continue;
@@ -294,7 +296,7 @@ impl NotifyWaiters {
     }
 
     fn update_streak(&self, winner_order: usize) {
-        let current = self.inner.streak_state.load(AtomicOrdering::Relaxed);
+        let current = self.streak_state.load(AtomicOrdering::Relaxed);
         let last_winner = (current >> 32) as usize;
         let new = if winner_order == last_winner {
             let streak = (current as u32).saturating_add(1);
@@ -302,7 +304,7 @@ impl NotifyWaiters {
         } else {
             ((winner_order as u64) << 32) | 1u64
         };
-        self.inner.streak_state.store(new, AtomicOrdering::Relaxed);
+        self.streak_state.store(new, AtomicOrdering::Relaxed);
     }
 
     fn update_head_timestamp(
@@ -310,7 +312,7 @@ impl NotifyWaiters {
         queue: &alloc::collections::VecDeque<Arc<WaiterEntry>>,
         order: usize,
     ) {
-        let slot = &self.inner.buddy_orders[order];
+        let slot = &self.buddy_orders[order];
         // Scan past tombstones (WOKEN/REVOKED) to find the first live entry.
         // Without this, a tombstone at front would set NO_WAITERS_TIMESTAMP
         // even when live waiters exist further back, making them invisible
@@ -337,7 +339,7 @@ impl NotifyWaiters {
             if pops >= MAX_POPS_PER_WAKE {
                 break;
             }
-            let mut queue = self.inner.buddy_orders[order].queue.lock().unwrap();
+            let mut queue = self.buddy_orders[order].queue.lock().unwrap();
             // Check the bound before popping. An entry popped here but not
             // delivered is lost from the queue with its count never decremented
             // and its oneshot never fired, stranding a live waiter forever.
@@ -356,7 +358,7 @@ impl NotifyWaiters {
                     .compare_exchange(LIVE, WOKEN, AtomicOrdering::AcqRel, AtomicOrdering::Relaxed)
                     .is_ok()
                 {
-                    self.inner.buddy_orders[order]
+                    self.buddy_orders[order]
                         .count
                         .fetch_sub(1, Ordering::Release);
                     self.update_head_timestamp(&queue, order);
@@ -374,7 +376,9 @@ impl NotifyWaiters {
             }
         }
     }
+}
 
+impl NotifyWaiters {
     fn buddy_register(&self, order: usize) -> BuddyRegistration {
         let order = order.min(self.inner.buddy_orders.len() - 1);
         let (tx, rx) = oneshot::channel();
@@ -419,7 +423,7 @@ impl BuddyWaiter for NotifyWaiters {
     }
 
     fn wake(&self, freed_order: usize) {
-        self.buddy_wake(freed_order);
+        self.inner.buddy_wake(freed_order);
     }
 }
 
@@ -589,6 +593,22 @@ impl Drop for BuddyRegistration {
             self.waiters.buddy_orders[self.order]
                 .count
                 .fetch_sub(1, Ordering::Release);
+        }
+
+        // A wake delivered but never polled (task cancelled between the
+        // oneshot firing and its next poll, or an allocation that succeeded
+        // without observing the delivery) would otherwise be swallowed,
+        // stalling the remaining waiters until an unrelated free. Recover it
+        // from the receiver and hand it onward. This propagates transitively
+        // through a chain of cancelled waiters until it reaches a live one,
+        // and it converges: a woken waiter that runs its retry drains the
+        // receiver in poll, and a failed retry deliberately does NOT
+        // re-broadcast. The failure proves the block is gone (buddy_wake
+        // already fans out across candidate orders at free time), and
+        // re-broadcasting from re-registering waiters turns one free into a
+        // perpetual wake storm under saturation.
+        if let Some(freed) = self.rx.take().and_then(|mut rx| rx.try_recv().ok()) {
+            self.waiters.buddy_wake(freed);
         }
     }
 }
@@ -1606,7 +1626,7 @@ mod tests {
         }
 
         // First wake exhausts the bound on tombstones; the live waiter survives.
-        waiters.buddy_wake(0);
+        waiters.inner.buddy_wake(0);
         {
             let queue = slot.queue.lock().unwrap();
             let live_queued = queue
@@ -1623,12 +1643,212 @@ mod tests {
         assert!(live_rx.try_recv().is_err(), "waiter woken prematurely");
 
         // Tombstones are now cleared; the next wake delivers the survivor.
-        waiters.buddy_wake(0);
+        waiters.inner.buddy_wake(0);
         assert_eq!(
             live_rx.try_recv().ok(),
             Some(0),
             "surviving waiter never delivered"
         );
+    }
+
+    // -- Wake propagation regression tests --
+
+    /// A registration dropped while holding an undelivered wake (cancelled
+    /// after the oneshot fired but before it was polled) must propagate the
+    /// freed order to the next waiter instead of swallowing it.
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_unpolled_wake_drop_propagates_to_next_waiter() {
+        let waiters = NotifyWaiters::new(1);
+
+        let mut reg1 = waiters.buddy_register(0);
+        let mut reg2 = waiters.buddy_register(0);
+        let entry1 = Arc::clone(reg1.entry.as_ref().unwrap());
+        let entry2 = Arc::clone(reg2.entry.as_ref().unwrap());
+        Pin::new(&mut reg1).prepare();
+        Pin::new(&mut reg2).prepare();
+
+        waiters.inner.buddy_wake(0);
+        assert_eq!(entry1.state.load(AtomicOrdering::Relaxed), WOKEN);
+        assert_eq!(entry2.state.load(AtomicOrdering::Relaxed), LIVE);
+
+        drop(reg1);
+
+        assert_eq!(
+            entry2.state.load(AtomicOrdering::Relaxed),
+            WOKEN,
+            "unconsumed wake lost on drop"
+        );
+    }
+
+    /// A registration dropped after observing its wake (polled Ready) must
+    /// NOT re-broadcast it. In the allocation loop this drop point is only
+    /// reachable after a failed retry, and the failed retry proves the block
+    /// is gone; re-broadcasting from re-registering waiters turns one free
+    /// into a perpetual wake storm among parked waiters under saturation.
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_polled_wake_drop_does_not_rebroadcast() {
+        let waiters = NotifyWaiters::new(1);
+
+        let mut reg1 = waiters.buddy_register(0);
+        let mut reg2 = waiters.buddy_register(0);
+        let entry2 = Arc::clone(reg2.entry.as_ref().unwrap());
+        Pin::new(&mut reg1).prepare();
+        Pin::new(&mut reg2).prepare();
+
+        waiters.inner.buddy_wake(0);
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+        assert!(Pin::new(&mut reg1).poll(&mut cx).is_ready());
+
+        drop(reg1);
+
+        assert_eq!(
+            entry2.state.load(AtomicOrdering::Relaxed),
+            LIVE,
+            "observed wake re-broadcast: propagation does not converge"
+        );
+    }
+
+    /// A wake that lands unpolled after revoke (the waiter allocated without
+    /// ever observing the delivery) is recovered from the receiver at drop
+    /// and re-routed to the next waiter.
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_drop_recovers_wake_unobserved_by_revoke() {
+        let waiters = NotifyWaiters::new(1);
+
+        let mut reg1 = waiters.buddy_register(0);
+        let mut reg2 = waiters.buddy_register(0);
+        let entry2 = Arc::clone(reg2.entry.as_ref().unwrap());
+        Pin::new(&mut reg1).prepare();
+        Pin::new(&mut reg2).prepare();
+
+        // Wake delivered but never polled; the fast path then succeeds and
+        // revokes without ever observing the delivery.
+        waiters.inner.buddy_wake(0);
+        Pin::new(&mut reg1).revoke();
+
+        drop(reg1);
+
+        assert_eq!(
+            entry2.state.load(AtomicOrdering::Relaxed),
+            WOKEN,
+            "wake delivered after revoke was lost instead of re-routed"
+        );
+        assert_eq!(reg2.rx.as_mut().unwrap().try_recv().ok(), Some(0));
+    }
+
+    /// An unobserved wake tunnels through a chain of cancelled waiters until
+    /// it reaches a live one. The chain consumes one queue entry per hop and
+    /// cancelled waiters do not re-register, so it always terminates.
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_cancelled_chain_propagates_transitively() {
+        let waiters = NotifyWaiters::new(1);
+
+        let mut reg1 = waiters.buddy_register(0);
+        let mut reg2 = waiters.buddy_register(0);
+        let mut reg3 = waiters.buddy_register(0);
+        let entry2 = Arc::clone(reg2.entry.as_ref().unwrap());
+        let entry3 = Arc::clone(reg3.entry.as_ref().unwrap());
+        Pin::new(&mut reg1).prepare();
+        Pin::new(&mut reg2).prepare();
+        Pin::new(&mut reg3).prepare();
+
+        // Delivered to reg1, which dies without polling: reg2 inherits.
+        waiters.inner.buddy_wake(0);
+        drop(reg1);
+        assert_eq!(entry2.state.load(AtomicOrdering::Relaxed), WOKEN);
+
+        // reg2 also dies without polling: the wake must reach reg3.
+        drop(reg2);
+        assert_eq!(
+            entry3.state.load(AtomicOrdering::Relaxed),
+            WOKEN,
+            "wake lost inside a cancelled-waiter chain"
+        );
+    }
+
+    /// End-to-end storm regression: one free against always-failing waiters
+    /// must produce a bounded number of retries, not a self-sustaining wake
+    /// loop among re-registering waiters.
+    #[tokio::test(flavor = "current_thread")]
+    async fn buddy_single_free_causes_bounded_retries() {
+        let waiters = Arc::new(NotifyWaiters::new(1));
+        let retries = Arc::new(AtomicUsize::new(0));
+
+        for _ in 0..2 {
+            let w = Arc::clone(&waiters);
+            let r = Arc::clone(&retries);
+            tokio::spawn(async move {
+                allocate_with_buddy_waiter(w.as_ref(), 0, move || {
+                    r.fetch_add(1, AtomicOrdering::Relaxed);
+                    None::<()>
+                })
+                .await
+            });
+        }
+        while waiters.inner.buddy_orders[0].count.load(Ordering::Acquire) < 2 {
+            tokio::task::yield_now().await;
+        }
+        let baseline = retries.load(AtomicOrdering::Relaxed);
+
+        waiters.inner.buddy_wake(0);
+        for _ in 0..500 {
+            tokio::task::yield_now().await;
+        }
+
+        let after_wake = retries.load(AtomicOrdering::Relaxed) - baseline;
+        assert!(
+            after_wake <= 4,
+            "wake storm: {after_wake} retries from a single free"
+        );
+    }
+
+    /// End-to-end through the allocation loop: a waiter cancelled after its
+    /// wake was delivered but before its task ran hands the wake to the next
+    /// waiter instead of stalling it until an unrelated free.
+    #[tokio::test(flavor = "current_thread")]
+    async fn buddy_cancelled_after_delivery_hands_wake_to_next_waiter() {
+        let waiters = Arc::new(NotifyWaiters::new(1));
+        let available = Arc::new(AtomicUsize::new(0));
+
+        // Waiter A parks first (front of the queue).
+        let wa = Arc::clone(&waiters);
+        let a =
+            tokio::spawn(
+                async move { allocate_with_buddy_waiter(wa.as_ref(), 0, || None::<()>).await },
+            );
+        while waiters.inner.buddy_orders[0].count.load(Ordering::Acquire) < 1 {
+            tokio::task::yield_now().await;
+        }
+
+        // Waiter B succeeds once a block is available.
+        let wb = Arc::clone(&waiters);
+        let avail = Arc::clone(&available);
+        let b = tokio::spawn(async move {
+            allocate_with_buddy_waiter(wb.as_ref(), 0, move || {
+                (avail.load(AtomicOrdering::Acquire) > 0).then_some(())
+            })
+            .await
+        });
+        while waiters.inner.buddy_orders[0].count.load(Ordering::Acquire) < 2 {
+            tokio::task::yield_now().await;
+        }
+
+        // Deliver to A, then cancel A before it can poll: current_thread
+        // runtime with no yield in between, so A never observes the wake.
+        available.store(1, AtomicOrdering::Release);
+        waiters.inner.buddy_wake(0);
+        a.abort();
+        let _ = a.await;
+
+        timeout(Duration::from_secs(5), b)
+            .await
+            .expect("recovered wake never reached the next waiter")
+            .unwrap();
     }
 
     // -- Fairness regression tests --
