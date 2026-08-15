@@ -246,3 +246,27 @@ run = [
 description = "Verify the crate is ready to publish"
 depends = ["_doctor:base"]
 run = 'cargo package --locked --allow-dirty --offline'
+
+[tasks."version:check"]
+description = "Verify the crate version is not below the latest release tag"
+depends = ["_doctor:base"]
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+version="$(cargo pkgid | sed -E 's/.*[@#]//')"
+latest="$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -n1)"
+if [ -z "$latest" ]; then
+  echo "crate version ${version}; no release tags yet"
+  exit 0
+fi
+if [ "$version" = "$latest" ]; then
+  echo "crate version ${version} matches latest release tag (no release)"
+  exit 0
+fi
+highest="$(printf '%s\n%s\n' "$latest" "$version" | sort -V | tail -n1)"
+if [ "$highest" != "$version" ]; then
+  echo "error: crate version ${version} is below the latest release v${latest}" >&2
+  exit 1
+fi
+echo "crate version ${version} is ahead of v${latest}; merge to main releases it"
+'''
