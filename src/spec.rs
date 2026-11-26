@@ -31,7 +31,7 @@ impl SlotSpec {
     ) -> Result<(usize, usize), BuildError> {
         match *self {
             SlotSpec::Count(count) => {
-                let raw_size = block_len / count.get();
+                let raw_size = block_len / count;
                 let aligned_size = align_down(raw_size, alignment);
                 if aligned_size == 0 {
                     return Err(BuildError::ZeroUsableSlots);
