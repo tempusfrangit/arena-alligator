@@ -597,6 +597,13 @@ async fn watchdog<A: SoakArena>(
                 m.frees
             ));
         }
+        if m.bytes_live > arena.capacity() {
+            ledger.violation(format!(
+                "bytes_live {} above capacity {}",
+                m.bytes_live,
+                arena.capacity()
+            ));
+        }
 
         let stuck = ledger
             .smallest_parked_order()
