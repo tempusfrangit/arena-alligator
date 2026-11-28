@@ -573,6 +573,8 @@ impl<D: crate::dealloc::Dealloc> RawBackedFixedArenaBuilder<D> {
 /// - [`AutoSpill`]: builds [`FixedArena`] with heap overflow fallback.
 /// - [`HazmatRaw`]: builds [`RawFixedArena`](crate::hazmat::RawFixedArena)
 ///   with raw pointer access. Requires `hazmat-raw-access` feature.
+///   With the `async-alloc` feature also on, `build_async()` returns an
+///   [`AsyncRawFixedArena`](crate::hazmat::AsyncRawFixedArena).
 pub struct FixedArenaBuilder<Mode = Standard> {
     slot_count: NonZeroUsize,
     slot_capacity: NonZeroUsize,
@@ -694,10 +696,10 @@ impl<Mode> FixedArenaBuilder<Mode> {
     }
 
     #[cfg(feature = "async-alloc")]
-    fn build_fixed_async_with<W>(
+    fn build_fixed_async_parts<W>(
         self,
         waiters: W,
-    ) -> Result<crate::async_alloc::AsyncFixedArena<W>, BuildError>
+    ) -> Result<(FixedArena, alloc::sync::Arc<W>), BuildError>
     where
         W: crate::async_alloc::Waiter,
     {
@@ -715,7 +717,7 @@ impl<Mode> FixedArenaBuilder<Mode> {
             );
         }
 
-        Ok(crate::async_alloc::AsyncFixedArena::new(arena, waiters))
+        Ok((arena, waiters))
     }
 }
 
@@ -807,7 +809,7 @@ impl FixedArenaBuilder<HazmatRaw> {
 impl FixedArenaBuilder<Standard> {
     /// Build an async-capable arena using the default notify-based waiter.
     pub fn build_async(self) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
-        self.build_fixed_async_with(crate::async_alloc::NotifyWaiters::new(1))
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(1))
     }
 
     /// Build an async-capable arena with a custom waiter policy.
@@ -818,7 +820,8 @@ impl FixedArenaBuilder<Standard> {
     where
         W: crate::async_alloc::Waiter,
     {
-        self.build_fixed_async_with(waiters)
+        let (arena, waiters) = self.build_fixed_async_parts(waiters)?;
+        Ok(crate::async_alloc::AsyncFixedArena::new(arena, waiters))
     }
 }
 
@@ -826,7 +829,7 @@ impl FixedArenaBuilder<Standard> {
 impl FixedArenaBuilder<AutoSpill> {
     /// Build an async-capable arena using the default notify-based waiter.
     pub fn build_async(self) -> Result<crate::async_alloc::AsyncFixedArena, BuildError> {
-        self.build_fixed_async_with(crate::async_alloc::NotifyWaiters::new(1))
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(1))
     }
 
     /// Build an async-capable arena with a custom waiter policy.
@@ -837,7 +840,31 @@ impl FixedArenaBuilder<AutoSpill> {
     where
         W: crate::async_alloc::Waiter,
     {
-        self.build_fixed_async_with(waiters)
+        let (arena, waiters) = self.build_fixed_async_parts(waiters)?;
+        Ok(crate::async_alloc::AsyncFixedArena::new(arena, waiters))
+    }
+}
+
+#[cfg(all(feature = "hazmat-raw-access", feature = "async-alloc"))]
+impl FixedArenaBuilder<HazmatRaw> {
+    /// Build an async raw arena with the default waiter.
+    pub fn build_async(self) -> Result<crate::hazmat::AsyncRawFixedArena, BuildError> {
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(1))
+    }
+
+    /// Build an async raw arena with a waiter that the caller supplies.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::hazmat::AsyncRawFixedArena<W>, BuildError>
+    where
+        W: crate::async_alloc::Waiter,
+    {
+        let (arena, waiters) = self.build_fixed_async_parts(waiters)?;
+        Ok(crate::hazmat::AsyncRawFixedArena::new(
+            crate::hazmat::RawFixedArena(arena),
+            waiters,
+        ))
     }
 }
 

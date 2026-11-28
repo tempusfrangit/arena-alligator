@@ -1,14 +1,13 @@
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
 use core::fmt;
 use core::future::Future;
 use core::ops::Deref;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use std::time::Instant;
 
 use tokio::sync::Notify;
@@ -16,7 +15,8 @@ use tokio::sync::futures::OwnedNotified;
 use tokio::sync::oneshot;
 
 use crate::buffer::Buffer;
-use crate::sync::atomic::{AtomicUsize, Ordering};
+use crate::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use crate::sync::cell::UnsafeCell;
 use crate::{BuddyArena, FixedArena};
 
 // ---------------------------------------------------------------------------
@@ -140,15 +140,17 @@ const LIVE: u8 = 0;
 const WOKEN: u8 = 1;
 const REVOKED: u8 = 2;
 
-struct WaiterEntry {
+// The sender type is generic only so that the loom model can use a payload that
+// it can observe. Production code always uses the default.
+struct WaiterEntry<T = oneshot::Sender<usize>> {
     state: AtomicU8,
     // SAFETY: accessed exactly once by whichever side wins the CAS on `state`.
-    tx: UnsafeCell<Option<oneshot::Sender<usize>>>,
+    tx: UnsafeCell<Option<T>>,
     timestamp: u64,
 }
 
-impl WaiterEntry {
-    fn new(tx: oneshot::Sender<usize>, timestamp: u64) -> Self {
+impl<T> WaiterEntry<T> {
+    fn new(tx: T, timestamp: u64) -> Self {
         Self {
             state: AtomicU8::new(LIVE),
             tx: UnsafeCell::new(Some(tx)),
@@ -156,21 +158,27 @@ impl WaiterEntry {
         }
     }
 
-    /// Take the oneshot sender out of this entry.
-    ///
-    /// # Safety
-    ///
-    /// Caller must have won the CAS on `state` (Live→Woken or Live→Revoked).
-    /// This guarantees exclusive access — no other code path will call this.
-    unsafe fn take_tx(&self) -> Option<oneshot::Sender<usize>> {
-        unsafe { (*self.tx.get()).take() }
+    /// Move the entry from LIVE to `to` (WOKEN or REVOKED) and take its
+    /// sender. Only the caller that wins the transition gets `Some`. Each
+    /// other caller gets `None` and does not touch the sender.
+    fn claim(&self, to: u8) -> Option<T> {
+        debug_assert!(to == WOKEN || to == REVOKED);
+        self.state
+            .compare_exchange(LIVE, to, AtomicOrdering::AcqRel, AtomicOrdering::Relaxed)
+            .ok()?;
+        // SAFETY: no code moves `state` back to LIVE, so the CAS above succeeds
+        // for at most one caller in the lifetime of the entry. Only that caller
+        // gets to this access.
+        self.tx.with_mut(|tx| unsafe { (*tx).take() })
     }
 }
 
-// SAFETY: tx is only accessed by the CAS winner, so no data races.
-// The oneshot::Sender is Send, and AtomicU8/u64 are Sync.
-unsafe impl Send for WaiterEntry {}
-unsafe impl Sync for WaiterEntry {}
+// SAFETY: only the CAS winner accesses tx, and the winner can run on any
+// thread, so the payload must be Send. No code shares a reference to the
+// payload, so Sync is not necessary for the payload. The state atomic and
+// timestamp are Sync.
+unsafe impl<T: Send> Send for WaiterEntry<T> {}
+unsafe impl<T: Send> Sync for WaiterEntry<T> {}
 
 // ---------------------------------------------------------------------------
 // Buddy wake internals — per-order state + scoring
@@ -367,22 +375,14 @@ impl NotifyWaitersInner {
                     continue;
                 }
 
-                if entry
-                    .state
-                    .compare_exchange(LIVE, WOKEN, AtomicOrdering::AcqRel, AtomicOrdering::Relaxed)
-                    .is_ok()
-                {
+                if let Some(tx) = entry.claim(WOKEN) {
                     self.buddy_orders[order]
                         .count
                         .fetch_sub(1, Ordering::Release);
                     self.update_head_timestamp(&queue, order);
                     drop(queue);
 
-                    // SAFETY: this path won the CAS Live→Woken
-                    let tx = unsafe { entry.take_tx() };
-                    if let Some(tx) = tx
-                        && tx.send(freed_order).is_ok()
-                    {
+                    if tx.send(freed_order).is_ok() {
                         self.update_streak(order);
                         delivered += 1;
                         break;
@@ -544,18 +544,7 @@ impl BuddyRegistration {
         // The queue lock serializes this cancellation with prepare and wake, so an
         // older repair cannot overwrite the timestamp of a newer queue state.
         let mut queue = slot.queue.lock().unwrap();
-        let tx = if entry
-            .state
-            .compare_exchange(
-                LIVE,
-                REVOKED,
-                AtomicOrdering::AcqRel,
-                AtomicOrdering::Relaxed,
-            )
-            .is_ok()
-        {
-            // SAFETY: this path won the CAS Live -> Revoked.
-            let tx = unsafe { entry.take_tx() };
+        let tx = if let Some(tx) = entry.claim(REVOKED) {
             slot.count.fetch_sub(1, Ordering::Release);
             // Cancellation takes each revoked sender under this lock. Because of this,
             // the removal of the stale prefix cannot invoke wakers or scan old
@@ -567,7 +556,7 @@ impl BuddyRegistration {
                 queue.pop_front();
             }
             self.waiters.update_head_timestamp(&queue, self.order);
-            tx
+            Some(tx)
         } else {
             None
         };
@@ -650,7 +639,7 @@ impl Drop for BuddyRegistration {
 // Allocation loops
 // ---------------------------------------------------------------------------
 
-async fn allocate_with_waiter<W, T, F>(waiters: &W, mut try_allocate: F) -> T
+pub(crate) async fn allocate_with_waiter<W, T, F>(waiters: &W, mut try_allocate: F) -> T
 where
     W: Waiter,
     F: FnMut() -> Option<T>,
@@ -672,7 +661,11 @@ where
     }
 }
 
-async fn allocate_with_buddy_waiter<W, T, F>(waiters: &W, order: usize, mut try_allocate: F) -> T
+pub(crate) async fn allocate_with_buddy_waiter<W, T, F>(
+    waiters: &W,
+    order: usize,
+    mut try_allocate: F,
+) -> T
 where
     W: BuddyWaiter,
     F: FnMut() -> Option<T>,
@@ -2847,5 +2840,134 @@ mod tests {
                 assert_slot(&waiters, 0, NO_WAITERS_TIMESTAMP);
             }
         }
+    }
+}
+
+/// Loom models of the `WaiterEntry` state machine alone. The models examine the
+/// LIVE to WOKEN and LIVE to REVOKED transitions, and that only the winner
+/// takes the sender. They also examine that the holder that releases its
+/// reference last drops the entry. The queue, the oneshot channel and tokio
+/// are out of scope, because loom cannot see into them.
+#[cfg(all(test, loom))]
+mod loom_tests {
+    use alloc::vec::Vec;
+
+    use loom::thread;
+
+    use super::{LIVE, REVOKED, WOKEN, WaiterEntry};
+    use crate::sync::Arc;
+    use crate::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Takes the place of the oneshot sender. It counts drops, so a sender that
+    /// the entry hands out two times, or a leaked sender, gives a count other
+    /// than 1.
+    struct Token(Arc<AtomicUsize>);
+
+    impl Drop for Token {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn entry() -> (Arc<WaiterEntry<Token>>, Arc<AtomicUsize>) {
+        let drops = Arc::new(AtomicUsize::new(0));
+        let entry = Arc::new(WaiterEntry::new(Token(Arc::clone(&drops)), 0));
+        (entry, drops)
+    }
+
+    /// Starts one thread per item in `claims`. Each thread claims the given
+    /// transition, or for `None` only drops its reference. The function drops
+    /// the reference of the caller first, so the thread that releases its
+    /// reference last drops the entry. Returns the transition that each thread
+    /// won, if any, and the drop count of the payload.
+    fn race(claims: &[Option<u8>]) -> (Vec<Option<u8>>, usize) {
+        let (entry, drops) = entry();
+        let handles: Vec<_> = claims
+            .iter()
+            .map(|&to| {
+                let entry = Arc::clone(&entry);
+                thread::spawn(move || {
+                    let to = to?;
+                    entry.claim(to).map(|tx| {
+                        drop(tx);
+                        to
+                    })
+                })
+            })
+            .collect();
+        drop(entry);
+        let winners = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        (winners, drops.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn loom_waiter_entry_wake_vs_cancel_hands_out_sender_once() {
+        loom::model(|| {
+            let (entry, drops) = entry();
+            let wake = {
+                let entry = Arc::clone(&entry);
+                thread::spawn(move || entry.claim(WOKEN).map(drop).is_some())
+            };
+            let cancel = {
+                let entry = Arc::clone(&entry);
+                thread::spawn(move || entry.claim(REVOKED).map(drop).is_some())
+            };
+            let woke = wake.join().unwrap();
+            let revoked = cancel.join().unwrap();
+
+            assert!(woke != revoked, "exactly one side must win");
+            let expected = if woke { WOKEN } else { REVOKED };
+            assert_eq!(entry.state.load(Ordering::Relaxed), expected);
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+            assert!(entry.claim(WOKEN).is_none());
+            assert!(entry.claim(REVOKED).is_none());
+            drop(entry);
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+        });
+    }
+
+    /// Wake, cancel and a holder that only drops its reference. The main thread
+    /// releases its reference first, so any of the 3 threads can drop the entry.
+    #[test]
+    fn loom_waiter_entry_wake_cancel_and_drop() {
+        loom::model(|| {
+            let (winners, drops) = race(&[Some(WOKEN), Some(REVOKED), None]);
+            let won: Vec<_> = winners.into_iter().flatten().collect();
+            assert_eq!(won.len(), 1, "sender handed out {} times", won.len());
+            assert_eq!(drops, 1);
+        });
+    }
+
+    /// No thread claims the entry. The holder that releases its reference last
+    /// drops the entry, and the sender drops one time with it.
+    #[test]
+    fn loom_waiter_entry_unclaimed_sender_dropped_with_entry() {
+        loom::model(|| {
+            let (winners, drops) = race(&[None, None]);
+            assert!(winners.iter().all(Option::is_none));
+            assert_eq!(drops, 1);
+        });
+    }
+
+    /// Two claims for the same transition. Production code never does this,
+    /// because an entry leaves the queue one time only, under the queue lock.
+    /// In this case too, `claim` must hand out the sender one time only.
+    #[test]
+    fn loom_waiter_entry_duplicate_wake_claims_hand_out_once() {
+        loom::model(|| {
+            let (winners, drops) = race(&[Some(WOKEN), Some(WOKEN)]);
+            assert_eq!(winners.iter().flatten().count(), 1);
+            assert_eq!(drops, 1);
+        });
+    }
+
+    #[test]
+    fn loom_waiter_entry_starts_live() {
+        loom::model(|| {
+            let (entry, drops) = entry();
+            assert_eq!(entry.state.load(Ordering::Relaxed), LIVE);
+            drop(entry);
+            assert_eq!(drops.load(Ordering::Relaxed), 1);
+        });
     }
 }

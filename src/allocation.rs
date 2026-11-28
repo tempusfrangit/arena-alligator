@@ -30,8 +30,12 @@ impl ArenaRef {
                         zeroed_bm.set_range(slot_idx, slot_idx + 1);
                     }
                 }
-                inner.bitmap.free(slot_idx);
+                // Record the free before the slot becomes claimable. In the
+                // other order, the metrics can count a concurrent allocation
+                // first, and a snapshot then shows more live bytes than the
+                // arena reserves.
                 inner.metrics.record_free(inner.slot_capacity);
+                inner.bitmap.free(slot_idx);
                 #[cfg(feature = "async-alloc")]
                 if let Some(wake_handle) = &inner.wake_handle {
                     wake_handle.wake();
