@@ -237,6 +237,8 @@ let arena = Arc::new(
 let buf = arena.allocate_async().await;
 ```
 
+With the `hazmat-raw-access` and `async-alloc` features, a builder in hazmat mode has `build_async()` and `build_async_with(waiters)`. They return `AsyncRawFixedArena` and `AsyncRawBuddyArena`. `raw_alloc_async()` waits until a region is available. For a buddy arena, a request larger than the arena returns `AllocError::RequestTooLarge` immediately. See [`docs/hazmat.md`](docs/hazmat.md).
+
 ## Metrics
 
 `metrics()` snapshots allocator state. Fixed reports allocation, failure, spill, and live-capacity counters. Buddy adds split, coalesce, and largest-free-block data so fragmentation pressure is visible directly.

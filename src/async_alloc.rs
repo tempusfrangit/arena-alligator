@@ -639,7 +639,7 @@ impl Drop for BuddyRegistration {
 // Allocation loops
 // ---------------------------------------------------------------------------
 
-async fn allocate_with_waiter<W, T, F>(waiters: &W, mut try_allocate: F) -> T
+pub(crate) async fn allocate_with_waiter<W, T, F>(waiters: &W, mut try_allocate: F) -> T
 where
     W: Waiter,
     F: FnMut() -> Option<T>,
@@ -661,7 +661,11 @@ where
     }
 }
 
-async fn allocate_with_buddy_waiter<W, T, F>(waiters: &W, order: usize, mut try_allocate: F) -> T
+pub(crate) async fn allocate_with_buddy_waiter<W, T, F>(
+    waiters: &W,
+    order: usize,
+    mut try_allocate: F,
+) -> T
 where
     W: BuddyWaiter,
     F: FnMut() -> Option<T>,

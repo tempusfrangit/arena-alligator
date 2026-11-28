@@ -437,6 +437,8 @@ impl<D: crate::dealloc::Dealloc> RawBackedBuddyArenaBuilder<D> {
 /// - [`HazmatRaw`](crate::HazmatRaw): builds
 ///   [`RawBuddyArena`](crate::hazmat::RawBuddyArena) with raw pointer
 ///   access. Requires `hazmat-raw-access` feature.
+///   With the `async-alloc` feature also on, `build_async()` returns an
+///   [`AsyncRawBuddyArena`](crate::hazmat::AsyncRawBuddyArena).
 pub struct BuddyArenaBuilder<Mode = crate::arena::Standard> {
     geometry: crate::geometry::BuddyGeometry,
     config: crate::arena::BuildConfig,
@@ -552,10 +554,10 @@ impl<Mode> BuddyArenaBuilder<Mode> {
     }
 
     #[cfg(feature = "async-alloc")]
-    fn build_buddy_async_with<W>(
+    fn build_buddy_async_parts<W>(
         self,
         waiters: W,
-    ) -> Result<crate::async_alloc::AsyncBuddyArena<W>, BuildError>
+    ) -> Result<(BuddyArena, alloc::sync::Arc<W>), BuildError>
     where
         W: crate::async_alloc::BuddyWaiter,
     {
@@ -569,7 +571,7 @@ impl<Mode> BuddyArenaBuilder<Mode> {
             crate::arena::prefault_region(arena.inner.ptr, arena.inner.total_size, ps);
         }
 
-        Ok(crate::async_alloc::AsyncBuddyArena::new(arena, waiters))
+        Ok((arena, waiters))
     }
 }
 
@@ -664,7 +666,7 @@ impl BuddyArenaBuilder<crate::arena::Standard> {
     /// Build an async-capable buddy arena using the default per-order notify waiter.
     pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
         let max_order = self.geometry.max_order();
-        self.build_buddy_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
     }
 
     /// Build an async-capable buddy arena with a custom waiter policy.
@@ -675,7 +677,8 @@ impl BuddyArenaBuilder<crate::arena::Standard> {
     where
         W: crate::async_alloc::BuddyWaiter,
     {
-        self.build_buddy_async_with(waiters)
+        let (arena, waiters) = self.build_buddy_async_parts(waiters)?;
+        Ok(crate::async_alloc::AsyncBuddyArena::new(arena, waiters))
     }
 }
 
@@ -684,7 +687,7 @@ impl BuddyArenaBuilder<crate::arena::AutoSpill> {
     /// Build an async-capable buddy arena using the default per-order notify waiter.
     pub fn build_async(self) -> Result<crate::async_alloc::AsyncBuddyArena, BuildError> {
         let max_order = self.geometry.max_order();
-        self.build_buddy_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
     }
 
     /// Build an async-capable buddy arena with a custom waiter policy.
@@ -695,7 +698,32 @@ impl BuddyArenaBuilder<crate::arena::AutoSpill> {
     where
         W: crate::async_alloc::BuddyWaiter,
     {
-        self.build_buddy_async_with(waiters)
+        let (arena, waiters) = self.build_buddy_async_parts(waiters)?;
+        Ok(crate::async_alloc::AsyncBuddyArena::new(arena, waiters))
+    }
+}
+
+#[cfg(all(feature = "hazmat-raw-access", feature = "async-alloc"))]
+impl BuddyArenaBuilder<crate::arena::HazmatRaw> {
+    /// Build an async raw buddy arena with the default waiter.
+    pub fn build_async(self) -> Result<crate::hazmat::AsyncRawBuddyArena, BuildError> {
+        let max_order = self.geometry.max_order();
+        self.build_async_with(crate::async_alloc::NotifyWaiters::new(max_order + 1))
+    }
+
+    /// Build an async raw buddy arena with a waiter that the caller supplies.
+    pub fn build_async_with<W>(
+        self,
+        waiters: W,
+    ) -> Result<crate::hazmat::AsyncRawBuddyArena<W>, BuildError>
+    where
+        W: crate::async_alloc::BuddyWaiter,
+    {
+        let (arena, waiters) = self.build_buddy_async_parts(waiters)?;
+        Ok(crate::hazmat::AsyncRawBuddyArena::new(
+            crate::hazmat::RawBuddyArena(arena),
+            waiters,
+        ))
     }
 }
 

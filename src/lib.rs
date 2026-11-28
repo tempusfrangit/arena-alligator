@@ -101,6 +101,13 @@
 //! [`AllocError::RequestTooLarge`] for a request larger than the arena could
 //! ever satisfy, rather than parking forever.
 //!
+//! With the `hazmat-raw-access` and `async-alloc` features, a builder in
+//! hazmat mode has `build_async()` and `build_async_with(waiters)`. They
+//! return [`hazmat::AsyncRawFixedArena`] and [`hazmat::AsyncRawBuddyArena`].
+//! `raw_alloc_async()` waits until a region is available. For a buddy arena,
+//! a request larger than the arena returns [`AllocError::RequestTooLarge`]
+//! immediately. The sync methods stay available through `Deref`.
+//!
 //! # `no_std`
 //!
 //! This crate is `#![no_std]` by default and depends only on `alloc` and

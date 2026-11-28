@@ -35,6 +35,7 @@ Core APIs:
 - FixedArenaBuilder::init_policy(...) and BuddyArenaBuilder::init_policy(...)
 - BytesExt::into_owned()
 - AsyncFixedArena::allocate_async() and AsyncBuddyArena::allocate_async(...) with feature "async-alloc"
+- AsyncRawFixedArena::raw_alloc_async() and AsyncRawBuddyArena::raw_alloc_async(...) with features "hazmat-raw-access" and "async-alloc"
 - FixedArena::metrics() and BuddyArena::metrics()
 
 Memory and overflow behavior:
