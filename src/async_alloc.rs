@@ -532,6 +532,53 @@ pub struct BuddyRegistration {
     pending_entry: Option<Arc<WaiterEntry>>,
 }
 
+impl BuddyRegistration {
+    fn cancel(&mut self) {
+        if !self.registered {
+            return;
+        }
+        self.registered = false;
+        let Some(entry) = &self.entry else {
+            return;
+        };
+        let slot = &self.waiters.buddy_orders[self.order];
+        // The queue lock serializes this cancellation with prepare and wake, so an
+        // older repair cannot overwrite the timestamp of a newer queue state.
+        let mut queue = slot.queue.lock().unwrap();
+        let tx = if entry
+            .state
+            .compare_exchange(
+                LIVE,
+                REVOKED,
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Relaxed,
+            )
+            .is_ok()
+        {
+            // SAFETY: this path won the CAS Live -> Revoked.
+            let tx = unsafe { entry.take_tx() };
+            slot.count.fetch_sub(1, Ordering::Release);
+            // Cancellation takes each revoked sender under this lock. Because of this,
+            // the removal of the stale prefix cannot invoke wakers or scan old
+            // tombstones more than one time.
+            while queue
+                .front()
+                .is_some_and(|head| head.state.load(AtomicOrdering::Relaxed) != LIVE)
+            {
+                queue.pop_front();
+            }
+            self.waiters.update_head_timestamp(&queue, self.order);
+            tx
+        } else {
+            None
+        };
+        drop(queue);
+        // The sender drop closes the channel, and that can invoke a waker that
+        // reenters this queue.
+        drop(tx);
+    }
+}
+
 impl WaitRegistration for BuddyRegistration {
     fn prepare(self: Pin<&mut Self>) {
         let this = unsafe { self.get_unchecked_mut() };
@@ -554,26 +601,7 @@ impl WaitRegistration for BuddyRegistration {
 
     fn revoke(self: Pin<&mut Self>) {
         let this = unsafe { self.get_unchecked_mut() };
-        if this.registered {
-            if let Some(entry) = &this.entry
-                && entry
-                    .state
-                    .compare_exchange(
-                        LIVE,
-                        REVOKED,
-                        AtomicOrdering::AcqRel,
-                        AtomicOrdering::Relaxed,
-                    )
-                    .is_ok()
-            {
-                // SAFETY: this path won the CAS Live→Revoked
-                let _tx = unsafe { entry.take_tx() };
-                this.waiters.buddy_orders[this.order]
-                    .count
-                    .fetch_sub(1, Ordering::Release);
-            }
-            this.registered = false;
-        }
+        this.cancel();
     }
 }
 
@@ -599,24 +627,7 @@ impl Future for BuddyRegistration {
 
 impl Drop for BuddyRegistration {
     fn drop(&mut self) {
-        if self.registered
-            && let Some(entry) = &self.entry
-            && entry
-                .state
-                .compare_exchange(
-                    LIVE,
-                    REVOKED,
-                    AtomicOrdering::AcqRel,
-                    AtomicOrdering::Relaxed,
-                )
-                .is_ok()
-        {
-            // SAFETY: this path won the CAS Live→Revoked
-            let _tx = unsafe { entry.take_tx() };
-            self.waiters.buddy_orders[self.order]
-                .count
-                .fetch_sub(1, Ordering::Release);
-        }
+        self.cancel();
 
         // A wake delivered but never polled (task cancelled between the
         // oneshot firing and its next poll, or an allocation that succeeded
@@ -2414,6 +2425,250 @@ mod tests {
                 .expect("waiter should not deadlock")
                 .expect("task should not panic");
             assert_eq!(cap, size);
+        }
+    }
+
+    #[cfg(not(loom))]
+    mod buddy_cancellation {
+        use super::*;
+
+        fn register_at(waiters: &NotifyWaiters, order: usize, timestamp: u64) -> BuddyRegistration {
+            let mut registration = waiters.buddy_register(order);
+            registration.entry = None;
+            let entry = registration.pending_entry.as_mut().unwrap();
+            Arc::get_mut(entry).unwrap().timestamp = timestamp;
+            registration.entry = Some(Arc::clone(entry));
+            Pin::new(&mut registration).prepare();
+            registration
+        }
+
+        fn cancel(registration: &mut Option<BuddyRegistration>, revoke: bool) {
+            if revoke {
+                Pin::new(registration.as_mut().unwrap()).revoke();
+            } else {
+                drop(registration.take());
+            }
+        }
+
+        fn assert_slot(waiters: &NotifyWaiters, count: usize, timestamp: u64) {
+            let slot = &waiters.inner.buddy_orders[0];
+            assert_eq!(slot.count.load(Ordering::Acquire), count);
+            assert_eq!(slot.head_timestamp.load(AtomicOrdering::Acquire), timestamp);
+        }
+
+        fn head_cancellation(revoke: bool) {
+            let waiters = NotifyWaiters::new(2);
+            let mut head = Some(register_at(&waiters, 0, 100_000));
+            let mut next = register_at(&waiters, 0, 900_000);
+            let _competitor = register_at(&waiters, 1, 500_000);
+            assert_eq!(waiters.inner.score_orders(1), [0, 1]);
+
+            cancel(&mut head, revoke);
+
+            assert_slot(&waiters, 1, 900_000);
+            assert_eq!(waiters.inner.score_orders(1), [1, 0]);
+            drop(head);
+            assert_slot(&waiters, 1, 900_000);
+            waiters.inner.buddy_wake(0);
+            assert_eq!(next.rx.as_mut().unwrap().try_recv(), Ok(0));
+            assert_slot(&waiters, 0, NO_WAITERS_TIMESTAMP);
+        }
+
+        #[test]
+        fn revoke_head_repairs_timestamp_and_score() {
+            head_cancellation(true);
+        }
+
+        #[test]
+        fn drop_head_repairs_timestamp_and_score() {
+            head_cancellation(false);
+        }
+
+        fn nonhead_cancellation(revoke: bool) {
+            let waiters = NotifyWaiters::new(1);
+            let _head = register_at(&waiters, 0, 100);
+            let mut middle = Some(register_at(&waiters, 0, 100));
+            let _tail = register_at(&waiters, 0, 300);
+
+            cancel(&mut middle, revoke);
+
+            assert_slot(&waiters, 2, 100);
+            let queue = waiters.inner.buddy_orders[0].queue.lock().unwrap();
+            assert_eq!(queue.len(), 3, "nonhead cancellation should stay lazy");
+            assert_eq!(queue[1].state.load(AtomicOrdering::Acquire), REVOKED);
+            drop(queue);
+            drop(middle);
+            assert_slot(&waiters, 2, 100);
+        }
+
+        #[test]
+        fn revoke_nonhead_preserves_timestamp() {
+            nonhead_cancellation(true);
+        }
+
+        #[test]
+        fn drop_nonhead_preserves_timestamp() {
+            nonhead_cancellation(false);
+        }
+
+        fn last_cancellation(revoke: bool) {
+            let waiters = NotifyWaiters::new(1);
+            let mut last = Some(register_at(&waiters, 0, 100));
+
+            cancel(&mut last, revoke);
+
+            assert_slot(&waiters, 0, NO_WAITERS_TIMESTAMP);
+            assert!(
+                waiters.inner.buddy_orders[0]
+                    .queue
+                    .lock()
+                    .unwrap()
+                    .is_empty()
+            );
+            let _replacement = register_at(&waiters, 0, 200);
+            drop(last);
+            assert_slot(&waiters, 1, 200);
+        }
+
+        #[test]
+        fn revoke_last_resets_timestamp() {
+            last_cancellation(true);
+        }
+
+        #[test]
+        fn drop_last_resets_timestamp() {
+            last_cancellation(false);
+        }
+
+        fn tombstone_chain(revoke: bool) {
+            let waiters = NotifyWaiters::new(1);
+            let mut head = Some(register_at(&waiters, 0, 100));
+            for timestamp in 0..(MAX_POPS_PER_WAKE * 2) {
+                let mut tombstone = Some(register_at(&waiters, 0, timestamp as u64));
+                cancel(&mut tombstone, revoke);
+            }
+            let mut survivor = register_at(&waiters, 0, 300);
+            assert_slot(&waiters, 2, 100);
+
+            cancel(&mut head, revoke);
+
+            assert_slot(&waiters, 1, 300);
+            assert_eq!(waiters.inner.buddy_orders[0].queue.lock().unwrap().len(), 1);
+            waiters.inner.buddy_wake(0);
+            assert_eq!(survivor.rx.as_mut().unwrap().try_recv(), Ok(0));
+            assert_slot(&waiters, 0, NO_WAITERS_TIMESTAMP);
+        }
+
+        #[test]
+        fn revoke_head_clears_tombstone_chain() {
+            tombstone_chain(true);
+        }
+
+        #[test]
+        fn drop_head_clears_tombstone_chain() {
+            tombstone_chain(false);
+        }
+
+        struct OnWake(Mutex<Option<Box<dyn FnOnce() + Send>>>);
+
+        impl std::task::Wake for OnWake {
+            fn wake(self: Arc<Self>) {
+                if let Some(callback) = self.0.lock().unwrap().take() {
+                    callback();
+                }
+            }
+        }
+
+        #[test]
+        fn sender_callbacks_observe_repair_and_can_reenter() {
+            for revoke in [false, true] {
+                let waiters = NotifyWaiters::new(1);
+                let mut head = Some(register_at(&waiters, 0, 100));
+                let next = Arc::new(Mutex::new(Some(register_at(&waiters, 0, 200))));
+                let result = Arc::new(Mutex::new(None));
+                let callback_waiters = waiters.clone();
+                let callback_result = Arc::clone(&result);
+                let callback_next = Arc::clone(&next);
+                let waker = std::task::Waker::from(Arc::new(OnWake(Mutex::new(Some(Box::new(
+                    move || {
+                        if callback_waiters.inner.buddy_orders[0]
+                            .queue
+                            .try_lock()
+                            .is_err()
+                        {
+                            return;
+                        }
+                        let slot = &callback_waiters.inner.buddy_orders[0];
+                        let observed = (
+                            slot.count.load(Ordering::Acquire),
+                            slot.head_timestamp.load(AtomicOrdering::Acquire),
+                        );
+                        drop(callback_next.lock().unwrap().take());
+                        let replacement = register_at(&callback_waiters, 0, 300);
+                        *callback_result.lock().unwrap() = Some((observed, replacement));
+                    },
+                ))))));
+                let mut cx = Context::from_waker(&waker);
+                assert!(Pin::new(head.as_mut().unwrap()).poll(&mut cx).is_pending());
+
+                cancel(&mut head, revoke);
+
+                let result = result.lock().unwrap();
+                let (observed, _) = result
+                    .as_ref()
+                    .expect("callback must run with queue unlocked");
+                assert_eq!(*observed, (1, 200));
+                assert_slot(&waiters, 1, 300);
+            }
+        }
+
+        #[test]
+        fn concurrent_updates_during_sender_drop_are_not_overwritten() {
+            for revoke in [false, true] {
+                let waiters = NotifyWaiters::new(1);
+                let mut head = Some(register_at(&waiters, 0, 100));
+                let next = register_at(&waiters, 0, 200);
+                let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+                let (release_tx, release_rx) = std::sync::mpsc::channel();
+                let callback_waiters = waiters.clone();
+                let waker = std::task::Waker::from(Arc::new(OnWake(Mutex::new(Some(Box::new(
+                    move || {
+                        let slot = &callback_waiters.inner.buddy_orders[0];
+                        let snapshot = slot.queue.try_lock().ok().map(|_queue| {
+                            (
+                                slot.count.load(Ordering::Acquire),
+                                slot.head_timestamp.load(AtomicOrdering::Acquire),
+                            )
+                        });
+                        entered_tx.send(snapshot).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    },
+                ))))));
+                let mut cx = Context::from_waker(&waker);
+                assert!(Pin::new(head.as_mut().unwrap()).poll(&mut cx).is_pending());
+
+                let cancellation = std::thread::spawn(move || {
+                    cancel(&mut head, revoke);
+                    head
+                });
+                let observed = entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                let replacement = if observed.is_some() {
+                    drop(next);
+                    let mut delivered = register_at(&waiters, 0, 300);
+                    waiters.inner.buddy_wake(0);
+                    assert_eq!(delivered.rx.as_mut().unwrap().try_recv(), Ok(0));
+                    Some(register_at(&waiters, 0, 400))
+                } else {
+                    None
+                };
+                release_tx.send(()).unwrap();
+                drop(cancellation.join().unwrap());
+
+                assert_eq!(observed, Some((1, 200)), "repair must precede callbacks");
+                assert_slot(&waiters, 1, 400);
+                drop(replacement);
+                assert_slot(&waiters, 0, NO_WAITERS_TIMESTAMP);
+            }
         }
     }
 }
