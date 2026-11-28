@@ -123,11 +123,14 @@ fn exhaustion_returns_arena_full() {
 fn concurrent_allocate_free_stress() {
     use std::sync::Barrier;
 
-    fn rand_bool(thread_id: u64, iteration: u64) -> bool {
-        let mix = thread_id
-            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            .wrapping_add(iteration.wrapping_mul(0x6C62_272E_07BB_0143));
-        mix & 1 == 0
+    const SEED: u64 = 0x5EED_A110_CA70_0001;
+
+    fn splitmix64(state: &mut u64) -> u64 {
+        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = *state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
     }
 
     let slot_count = 64;
@@ -148,11 +151,12 @@ fn concurrent_allocate_free_stress() {
             let arena = Arc::clone(&arena);
             let barrier = Arc::clone(&barrier);
             thread::spawn(move || {
+                let mut rng = SEED ^ t as u64;
                 barrier.wait();
-                for i in 0..iterations {
+                for _ in 0..iterations {
                     if let Ok(mut buf) = arena.allocate() {
                         buf.put_slice(b"test");
-                        if rand_bool(t as u64, i as u64) {
+                        if splitmix64(&mut rng) & 1 == 0 {
                             let _bytes = buf.freeze();
                         } else {
                             drop(buf);
@@ -174,7 +178,7 @@ fn concurrent_allocate_free_stress() {
     assert_eq!(
         recovered.len(),
         slot_count,
-        "all slots recovered at quiescence"
+        "all slots recovered at quiescence (seed {SEED:#x})"
     );
 }
 
