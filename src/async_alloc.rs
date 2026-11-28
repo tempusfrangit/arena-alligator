@@ -58,8 +58,24 @@ pub trait WaitRegistration: Future<Output = ()> {
     /// Arm the registration before the post-registration allocation retry.
     fn prepare(self: Pin<&mut Self>);
 
-    /// Revoke the registration when the retry succeeds immediately.
+    /// Revoke the registration when the post-registration retry succeeds
+    /// before the allocation loop awaits the registration. The loop does not
+    /// call this method after the registration completes.
     fn revoke(self: Pin<&mut Self>);
+
+    /// Consume a completed wake after the fixed allocation loop retries.
+    ///
+    /// The loop calls this method after that allocation attempt, whether the
+    /// attempt succeeds or fails. A failed retry shows that the slot is not
+    /// available, so the drop must not forward the handled wake. A drop without
+    /// a call to this method must keep the cancellation propagation that the
+    /// implementation gives, if it has one.
+    ///
+    /// The default is a no-op for registrations that do not use an
+    /// acknowledgement. An implementation that forwards completed wakes on drop
+    /// must override this method. A wrapper around such a registration must call
+    /// this method on the registration that it wraps.
+    fn consume(self: Pin<&mut Self>) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +474,12 @@ impl WaitRegistration for NotifyRegistration {
         }
         this.woken = false;
     }
+
+    fn consume(self: Pin<&mut Self>) {
+        // SAFETY: this write clears the wake flag and does not move the pinned
+        // notification.
+        unsafe { self.get_unchecked_mut() }.woken = false;
+    }
 }
 
 impl Future for NotifyRegistration {
@@ -482,12 +504,10 @@ impl Drop for NotifyRegistration {
         if self.registered {
             self.inner.fixed_slot.count.fetch_sub(1, Ordering::Release);
         }
-        // If a Notify permit was consumed (poll returned Ready) but drop ran
-        // before the allocation loop could retry, propagate the wake so the
-        // next waiter isn't stalled. The OwnedNotified won't propagate on its
-        // own because it was already polled to completion.
-        // Only propagate when another waiter exists — otherwise the stored
-        // permit creates a hot retry loop under full-arena conditions.
+        // A completed Notify future cannot forward its permit on cancellation. If
+        // the drop occurs before the retry handles the wake, the drop forwards the
+        // permit. The drop does not forward when no other waiter exists, because
+        // `notify_one` then stores a stale permit.
         if self.woken && self.inner.fixed_slot.count.load(Ordering::Acquire) > 0 {
             self.inner.fixed_slot.notify.notify_one();
         }
@@ -630,7 +650,12 @@ where
             registration.as_mut().revoke();
             return value;
         }
-        registration.await;
+        registration.as_mut().await;
+        let value = try_allocate();
+        registration.as_mut().consume();
+        if let Some(value) = value {
+            return value;
+        }
     }
 }
 
@@ -778,6 +803,7 @@ mod tests {
     use alloc::vec::Vec;
     use core::num::NonZeroUsize;
     use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use std::task::{Wake, Waker};
 
     use bytes::BufMut;
     use tokio::time::{Duration, timeout};
@@ -870,6 +896,10 @@ mod tests {
         fn revoke(self: Pin<&mut Self>) {
             unsafe { self.map_unchecked_mut(|this| &mut this.inner) }.revoke();
         }
+
+        fn consume(self: Pin<&mut Self>) {
+            unsafe { self.map_unchecked_mut(|this| &mut this.inner) }.consume();
+        }
     }
 
     impl Future for CountingFixedRegistration {
@@ -899,6 +929,215 @@ mod tests {
     }
 
     // -- Fixed arena tests --
+
+    #[derive(Default)]
+    struct WakeCounter(AtomicUsize);
+
+    impl WakeCounter {
+        fn count(&self) -> usize {
+            self.0.load(AtomicOrdering::Relaxed)
+        }
+    }
+
+    impl Wake for WakeCounter {
+        fn wake(self: Arc<Self>) {
+            self.wake_by_ref();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn fixed_failed_wake_retry_does_not_rebroadcast() {
+        let waiters = CountingWaiters::new(1);
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(32).unwrap(),
+        )
+        .build_async_with(waiters.clone())
+        .unwrap();
+        let held = arena.allocate().unwrap();
+        let attempts = AtomicUsize::new(0);
+        let allocate = || {
+            allocate_with_waiter(&waiters, || {
+                let attempt = attempts.fetch_add(1, AtomicOrdering::Relaxed);
+                // The assert limits the work in one poll, so a self-wake loop fails quickly.
+                assert!(attempt < 32, "allocation retry budget exhausted");
+                arena.allocate().ok()
+            })
+        };
+        let mut first = Box::pin(allocate());
+        let mut second = Box::pin(allocate());
+        let wakes = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut cx = Context::from_waker(&waker);
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(attempts.load(AtomicOrdering::Relaxed), 2);
+
+        drop(held);
+        let stolen = arena.allocate().unwrap();
+        assert_eq!(wakes.count(), 1);
+        for _ in 0..8 {
+            assert!(first.as_mut().poll(&mut cx).is_pending());
+            assert!(second.as_mut().poll(&mut cx).is_pending());
+        }
+        assert!(
+            attempts.load(AtomicOrdering::Relaxed) <= 4,
+            "one stolen slot caused {} allocation attempts",
+            attempts.load(AtomicOrdering::Relaxed)
+        );
+        assert_eq!(wakes.count(), 1, "handled wake reached a parked peer");
+
+        drop(stolen);
+        let Poll::Ready(buffer) = second.as_mut().poll(&mut cx) else {
+            panic!("oldest waiter did not receive the next free slot");
+        };
+        drop(buffer);
+        let Poll::Ready(buffer) = first.as_mut().poll(&mut cx) else {
+            panic!("re-registered waiter did not receive the following free slot");
+        };
+        drop(buffer);
+        assert_eq!(
+            waiters.inner.inner.fixed_slot.count.load(Ordering::Acquire),
+            0
+        );
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn fixed_successful_wake_retry_consumes_registration() {
+        let waiters = CountingWaiters::new(1);
+        let arena = FixedArena::with_slot_capacity(
+            NonZeroUsize::new(1).unwrap(),
+            NonZeroUsize::new(32).unwrap(),
+        )
+        .build_async_with(waiters.clone())
+        .unwrap();
+        let held = arena.allocate().unwrap();
+        let mut first = Box::pin(arena.allocate_async());
+        let mut second = Box::pin(arena.allocate_async());
+        let wakes = Arc::new(WakeCounter::default());
+        let waker = Waker::from(Arc::clone(&wakes));
+        let mut cx = Context::from_waker(&waker);
+        assert!(first.as_mut().poll(&mut cx).is_pending());
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+
+        drop(held);
+        let Poll::Ready(buffer) = first.as_mut().poll(&mut cx) else {
+            panic!("woken waiter did not allocate the free slot");
+        };
+        assert_eq!(wakes.count(), 1, "successful retry re-broadcast its wake");
+        assert_eq!(
+            waiters.registrations(),
+            2,
+            "retry replaced its registration"
+        );
+        assert!(second.as_mut().poll(&mut cx).is_pending());
+
+        drop(buffer);
+        assert_eq!(wakes.count(), 2);
+        assert!(second.as_mut().poll(&mut cx).is_ready());
+        assert_eq!(
+            waiters.inner.inner.fixed_slot.count.load(Ordering::Acquire),
+            0
+        );
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn fixed_cancelled_wake_propagates_before_and_after_poll() {
+        for observe_wake in [false, true] {
+            let waiters = NotifyWaiters::new(1);
+            let mut first = Box::pin(Waiter::register(&waiters));
+            let mut second = Box::pin(Waiter::register(&waiters));
+            let mut third = Box::pin(Waiter::register(&waiters));
+            let wakes = Arc::new(WakeCounter::default());
+            let waker = Waker::from(Arc::clone(&wakes));
+            let mut cx = Context::from_waker(&waker);
+            for registration in [&mut first, &mut second, &mut third] {
+                registration.as_mut().prepare();
+                assert!(registration.as_mut().poll(&mut cx).is_pending());
+            }
+
+            Waiter::wake(&waiters);
+            if observe_wake {
+                assert!(first.as_mut().poll(&mut cx).is_ready());
+            }
+            drop(first);
+            drop(second);
+            assert!(third.as_mut().poll(&mut cx).is_ready());
+            assert_eq!(wakes.count(), 3, "cancelled chain lost its wake");
+            drop(third);
+            assert_eq!(waiters.inner.fixed_slot.count.load(Ordering::Acquire), 0);
+
+            let mut next = Box::pin(Waiter::register(&waiters));
+            next.as_mut().prepare();
+            assert!(next.as_mut().poll(&mut cx).is_pending());
+        }
+    }
+
+    #[test]
+    fn fixed_custom_registration_revoke_only_before_completion() {
+        struct CustomWaiter;
+
+        struct CustomRegistration {
+            polls: usize,
+        }
+
+        impl Waiter for CustomWaiter {
+            type Registration = CustomRegistration;
+
+            fn register(&self) -> Self::Registration {
+                CustomRegistration { polls: 0 }
+            }
+
+            fn wake(&self) {}
+        }
+
+        impl WaitRegistration for CustomRegistration {
+            fn prepare(self: Pin<&mut Self>) {}
+
+            fn revoke(self: Pin<&mut Self>) {
+                assert!(self.polls < 2, "revoke called after completion");
+            }
+        }
+
+        impl Future for CustomRegistration {
+            type Output = ();
+
+            fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+                self.polls += 1;
+                if self.polls == 1 {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                } else {
+                    Poll::Ready(())
+                }
+            }
+        }
+
+        for successful_attempt in [1, 2, 4] {
+            let mut attempts = 0;
+            let mut allocation = Box::pin(allocate_with_waiter(&CustomWaiter, || {
+                attempts += 1;
+                assert!(attempts <= successful_attempt, "retry budget exhausted");
+                (attempts == successful_attempt).then_some(())
+            }));
+            let mut cx = Context::from_waker(Waker::noop());
+            let mut completed = false;
+            for _ in 0..4 {
+                if allocation.as_mut().poll(&mut cx).is_ready() {
+                    completed = true;
+                    break;
+                }
+            }
+            assert!(completed, "custom registration did not complete");
+        }
+    }
 
     #[tokio::test]
     async fn allocate_async_basic() {
