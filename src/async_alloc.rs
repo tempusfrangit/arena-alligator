@@ -386,8 +386,11 @@ impl NotifyWaitersInner {
                         && tx.send(freed_order).is_ok()
                     {
                         self.update_streak(order);
+                        break;
                     }
-                    break;
+                    // A receiver cancellation can occur after the CAS succeeds. Then the
+                    // send fails, and the loop retries the same order.
+                    queue = self.buddy_orders[order].queue.lock().unwrap();
                 }
             }
         }
@@ -1888,6 +1891,211 @@ mod tests {
             Some(0),
             "surviving waiter never delivered"
         );
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_wake_failed_send_reaches_same_order_successor() {
+        struct CheckUnlocked {
+            waiters: Arc<NotifyWaitersInner>,
+            wakes: AtomicUsize,
+        }
+
+        impl std::task::Wake for CheckUnlocked {
+            fn wake(self: Arc<Self>) {
+                assert!(
+                    self.waiters.buddy_orders[0].queue.try_lock().is_ok(),
+                    "delivery invoked a waker while holding the queue lock"
+                );
+                self.wakes.fetch_add(1, AtomicOrdering::Relaxed);
+            }
+        }
+
+        let waiters = NotifyWaiters::new(2);
+        let slot = &waiters.inner.buddy_orders[0];
+        let mut failed = waiters.buddy_register(0);
+        let mut revoked = waiters.buddy_register(0);
+        let mut successor = waiters.buddy_register(0);
+        let mut remaining = waiters.buddy_register(0);
+        for reg in [&mut failed, &mut revoked, &mut successor, &mut remaining] {
+            Pin::new(reg).prepare();
+        }
+        Pin::new(&mut revoked).revoke();
+        let probe = Arc::new(CheckUnlocked {
+            waiters: Arc::clone(&waiters.inner),
+            wakes: AtomicUsize::new(0),
+        });
+        let waker = std::task::Waker::from(Arc::clone(&probe));
+        let mut cx = Context::from_waker(&waker);
+        assert!(Pin::new(&mut successor).poll(&mut cx).is_pending());
+
+        // Keep the entry live so the wake wins the CAS but cannot deliver.
+        drop(failed.rx.take());
+        waiters.inner.buddy_wake(1);
+
+        assert_eq!(
+            failed
+                .entry
+                .as_ref()
+                .unwrap()
+                .state
+                .load(AtomicOrdering::Relaxed),
+            WOKEN
+        );
+        assert_eq!(
+            successor.rx.as_mut().unwrap().try_recv().ok(),
+            Some(1),
+            "failed delivery must offer the freed order to the same-order successor"
+        );
+        assert_eq!(probe.wakes.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(slot.count.load(Ordering::Acquire), 1);
+        assert_eq!(slot.queue.lock().unwrap().len(), 1);
+        assert_eq!(
+            slot.head_timestamp.load(AtomicOrdering::Acquire),
+            remaining.entry.as_ref().unwrap().timestamp
+        );
+        assert_eq!(waiters.inner.streak_state.load(AtomicOrdering::Relaxed), 1);
+        assert_eq!(
+            remaining.rx.as_mut().unwrap().try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        );
+
+        drop(failed);
+        drop(revoked);
+        drop(successor);
+        assert_eq!(slot.count.load(Ordering::Acquire), 1);
+        assert_eq!(
+            remaining
+                .entry
+                .as_ref()
+                .unwrap()
+                .state
+                .load(AtomicOrdering::Relaxed),
+            LIVE
+        );
+        drop(remaining);
+        assert_eq!(slot.count.load(Ordering::Acquire), 0);
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_wake_failed_sends_respect_global_pop_bound() {
+        for earlier_delivery in [false, true] {
+            let waiters = NotifyWaiters::new(2);
+            let mut earlier = waiters.buddy_register(0);
+            if earlier_delivery {
+                Pin::new(&mut earlier).prepare();
+                waiters.inner.buddy_orders[0]
+                    .head_timestamp
+                    .store(0, AtomicOrdering::Release);
+            }
+            waiters.inner.streak_state.store(3, AtomicOrdering::Relaxed);
+
+            let slot = &waiters.inner.buddy_orders[1];
+            let mut failed = Vec::new();
+            let (tx, mut survivor_rx) = oneshot::channel();
+            let timestamp = ORDER_BONUS_NS * 4 + DEPTH_BONUS_NS * MAX_POPS_PER_WAKE as u64;
+            let survivor = Arc::new(WaiterEntry::new(tx, timestamp + MAX_POPS_PER_WAKE as u64));
+            {
+                let mut queue = slot.queue.lock().unwrap();
+                for i in 0..MAX_POPS_PER_WAKE {
+                    let (tx, rx) = oneshot::channel();
+                    drop(rx);
+                    let entry = Arc::new(WaiterEntry::new(tx, timestamp + i as u64));
+                    queue.push_back(Arc::clone(&entry));
+                    failed.push(entry);
+                }
+                queue.push_back(Arc::clone(&survivor));
+                slot.count.store(MAX_POPS_PER_WAKE + 1, Ordering::Release);
+                slot.head_timestamp
+                    .store(timestamp, AtomicOrdering::Release);
+            }
+            let expected_orders: &[usize] = if earlier_delivery { &[0, 1] } else { &[1] };
+            assert_eq!(waiters.inner.score_orders(1).as_slice(), expected_orders);
+
+            waiters.inner.buddy_wake(1);
+
+            let failed_pops = MAX_POPS_PER_WAKE - usize::from(earlier_delivery);
+            let remaining = MAX_POPS_PER_WAKE + 1 - failed_pops;
+            assert_eq!(slot.count.load(Ordering::Acquire), remaining);
+            {
+                let queue = slot.queue.lock().unwrap();
+                assert_eq!(queue.len(), remaining);
+                assert_eq!(
+                    slot.head_timestamp.load(AtomicOrdering::Acquire),
+                    queue.front().unwrap().timestamp
+                );
+                assert!(Arc::ptr_eq(queue.back().unwrap(), &survivor));
+            }
+            for (i, entry) in failed.iter().enumerate() {
+                assert_eq!(
+                    entry.state.load(AtomicOrdering::Relaxed),
+                    if i < failed_pops { WOKEN } else { LIVE }
+                );
+            }
+            assert_eq!(survivor.state.load(AtomicOrdering::Relaxed), LIVE);
+            assert_eq!(
+                survivor_rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            );
+            assert_eq!(
+                waiters.inner.streak_state.load(AtomicOrdering::Relaxed),
+                3 + u64::from(earlier_delivery)
+            );
+            if earlier_delivery {
+                assert_eq!(earlier.rx.as_mut().unwrap().try_recv().ok(), Some(1));
+            }
+            assert_eq!(
+                waiters.inner.buddy_orders[0].count.load(Ordering::Acquire),
+                0
+            );
+
+            waiters.inner.buddy_wake(1);
+
+            assert_eq!(survivor_rx.try_recv().ok(), Some(1));
+            assert_eq!(slot.count.load(Ordering::Acquire), 0);
+            assert!(slot.queue.lock().unwrap().is_empty());
+            assert_eq!(
+                slot.head_timestamp.load(AtomicOrdering::Acquire),
+                NO_WAITERS_TIMESTAMP
+            );
+            assert_eq!(
+                waiters.inner.streak_state.load(AtomicOrdering::Relaxed),
+                (1u64 << 32) | 1
+            );
+        }
+    }
+
+    #[cfg(not(loom))]
+    #[test]
+    fn buddy_wake_failed_send_without_successor_preserves_streak() {
+        let waiters = NotifyWaiters::new(2);
+        let slot = &waiters.inner.buddy_orders[1];
+        let mut failed = waiters.buddy_register(1);
+        Pin::new(&mut failed).prepare();
+        drop(failed.rx.take());
+        waiters.inner.streak_state.store(3, AtomicOrdering::Relaxed);
+
+        waiters.inner.buddy_wake(1);
+
+        assert_eq!(
+            failed
+                .entry
+                .as_ref()
+                .unwrap()
+                .state
+                .load(AtomicOrdering::Relaxed),
+            WOKEN
+        );
+        assert_eq!(slot.count.load(Ordering::Acquire), 0);
+        assert!(slot.queue.lock().unwrap().is_empty());
+        assert_eq!(
+            slot.head_timestamp.load(AtomicOrdering::Acquire),
+            NO_WAITERS_TIMESTAMP
+        );
+        assert_eq!(waiters.inner.streak_state.load(AtomicOrdering::Relaxed), 3);
+        drop(failed);
+        assert_eq!(slot.count.load(Ordering::Acquire), 0);
     }
 
     // -- Wake propagation regression tests --
